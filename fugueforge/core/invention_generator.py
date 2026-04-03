@@ -219,7 +219,222 @@ def _is_consonant(p1: int, p2: int) -> bool:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 4.  Harmony-first pitch selection
+# 3b. Motif extraction and sequence generation (Bach-style)
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _extract_motif(subject: Subject, max_notes: int = 6) -> list[tuple[int, float]]:
+    """
+    Extract the subject head as a list of (interval, duration) pairs.
+
+    The *interval* is relative to the first note (semitones from motif root).
+    The *duration* is the original note duration.
+    Returns at most *max_notes* entries; the first always has interval = 0.
+    """
+    notes = [n for n in subject.notes if not n.is_rest][:max_notes]
+    if not notes:
+        return [(0, 0.5)]
+    root = notes[0].pitch
+    return [(n.pitch - root, n.duration) for n in notes]
+
+
+def _invert_motif(motif: list[tuple[int, float]]) -> list[tuple[int, float]]:
+    """Invert a motif: flip intervals around the root."""
+    return [(-iv, dur) for iv, dur in motif]
+
+
+def _place_motif(
+    motif: list[tuple[int, float]],
+    root_pitch: int,
+    start_offset: float,
+    voice: int,
+    lo: int,
+    hi: int,
+    role: EntryRole = EntryRole.EPISODE_MATERIAL,
+) -> list[FugueNote]:
+    """Place a motif at a given root pitch and offset, clamping to range."""
+    result = []
+    t = start_offset
+    for iv, dur in motif:
+        p = root_pitch + iv
+        p = max(lo, min(hi, p))
+        result.append(FugueNote(
+            pitch=p, duration=dur, voice=voice,
+            offset=round(t, 4), role=role,
+        ))
+        t += dur
+    return result
+
+
+def _motif_duration(motif: list[tuple[int, float]]) -> float:
+    """Total duration of a motif."""
+    return sum(dur for _, dur in motif)
+
+
+def _generate_sequence(
+    motif: list[tuple[int, float]],
+    start_pitch: int,
+    start_offset: float,
+    total_duration: float,
+    voice: int,
+    scale_pcs: frozenset[int],
+    lo: int,
+    hi: int,
+    direction: int = -1,
+    other_voice_notes: list[FugueNote] | None = None,
+) -> list[FugueNote]:
+    """
+    Generate a diatonic SEQUENCE: repeat the motif at successively
+    higher or lower diatonic pitch levels.
+
+    This is THE core technique of Bach's invention episodes:
+    a short motif fragment is stated, then transposed down (or up)
+    by a diatonic step, then again, creating a stepwise chain.
+
+    direction: -1 = descending sequence (most common), +1 = ascending
+    """
+    m_dur = _motif_duration(motif)
+    if m_dur <= 0:
+        return []
+
+    result: list[FugueNote] = []
+    root = start_pitch
+    t = start_offset
+    end = start_offset + total_duration
+
+    # Build sorted scale for diatonic transposition
+    scale = sorted(scale_pcs) if scale_pcs else list(range(12))
+
+    while t + m_dur <= end + 0.05:
+        notes = _place_motif(motif, root, t, voice, lo, hi, EntryRole.EPISODE_MATERIAL)
+
+        # Consonance check: if any note clashes badly with the other voice,
+        # try shifting the whole motif ±1 diatonic step
+        if other_voice_notes:
+            clash_count = 0
+            for n in notes:
+                for on in other_voice_notes:
+                    if on.is_rest:
+                        continue
+                    if on.offset < n.offset + n.duration and on.offset + on.duration > n.offset:
+                        iv = interval_class(n.pitch - on.pitch)
+                        if iv in (1, 2, 6, 10, 11):
+                            clash_count += 1
+            if clash_count >= 2:
+                # Try one step further in sequence direction
+                alt_root = _next_diatonic_pitch(root, direction, scale, lo, hi)
+                alt_notes = _place_motif(motif, alt_root, t, voice, lo, hi)
+                alt_clash = 0
+                for n in alt_notes:
+                    for on in other_voice_notes:
+                        if on.is_rest:
+                            continue
+                        if on.offset < n.offset + n.duration and on.offset + on.duration > n.offset:
+                            iv = interval_class(n.pitch - on.pitch)
+                            if iv in (1, 2, 6, 10, 11):
+                                alt_clash += 1
+                if alt_clash < clash_count:
+                    notes = alt_notes
+                    root = alt_root
+
+        result.extend(notes)
+        t += m_dur
+        # Move root DOWN (or UP) by one diatonic step for next iteration
+        root = _next_diatonic_pitch(root, direction, scale, lo, hi)
+
+    return result
+
+
+def _next_diatonic_pitch(
+    current: int, direction: int, scale: list[int], lo: int, hi: int,
+) -> int:
+    """Find the next diatonic pitch in the given direction."""
+    step = 1 if direction > 0 else -1
+    p = current + step
+    for _ in range(4):  # max 4 chromatic steps to find scale tone
+        if lo <= p <= hi and (p % 12) in scale:
+            return p
+        p += step
+    # Fallback: just move by 2 semitones (whole step)
+    return max(lo, min(hi, current + step * 2))
+
+
+def _generate_sustained_bass(
+    start_offset: float,
+    duration: float,
+    voice: int,
+    lo: int,
+    hi: int,
+    start_pitch: int,
+    scale_pcs: frozenset[int],
+    harmonic_skeleton: list[ChordLabel] | None,
+    other_voice_notes: list[FugueNote] | None = None,
+    role: EntryRole = EntryRole.EPISODE_MATERIAL,
+) -> list[FugueNote]:
+    """
+    Generate sustained harmonic support (one chord tone per beat or half-bar).
+    Each note is a chord tone from the harmonic skeleton, held for ~1 beat.
+    Checks consonance against the other voice's notes.
+    """
+    result = []
+    t = start_offset
+    end = start_offset + duration
+    current = start_pitch
+    beat_dur = 1.0  # one note per beat
+
+    while t < end - 0.05:
+        dur = min(beat_dur, end - t)
+        if dur < 0.1:
+            break
+
+        # Get chord tone
+        chord = get_chord_at(harmonic_skeleton, t) if harmonic_skeleton else None
+        chord_pcs = chord.chord_pcs if chord else frozenset()
+
+        # Find best chord tone near current pitch
+        best_p = current
+        best_sc = -9999.0
+        for delta in range(-7, 8):
+            p = current + delta
+            if p < lo or p > hi:
+                continue
+            sc = -abs(delta) * 2.0  # proximity
+            if chord_pcs and (p % 12) in chord_pcs:
+                sc += 8.0
+            elif scale_pcs and (p % 12) in scale_pcs:
+                sc += 2.0
+            else:
+                sc -= 5.0
+            # Consonance with other voice
+            if other_voice_notes:
+                for on in other_voice_notes:
+                    if on.is_rest:
+                        continue
+                    if on.offset < t + dur and on.offset + on.duration > t:
+                        iv = interval_class(p - on.pitch)
+                        if iv in (3, 4, 8, 9):
+                            sc += 3.0
+                        elif iv in (1, 11):
+                            sc -= 12.0
+                        elif iv == 6:
+                            sc -= 8.0
+                        elif iv in (2, 10):
+                            sc -= 5.0
+            if sc > best_sc:
+                best_sc = sc
+                best_p = p
+
+        result.append(FugueNote(
+            pitch=best_p, duration=round(dur, 4), voice=voice,
+            offset=round(t, 4), role=role,
+        ))
+        current = best_p
+        t += dur
+
+    return result
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 4.  Harmony-first pitch selection (for free counterpoint)
 # ═══════════════════════════════════════════════════════════════════════════
 
 def _snap_to_chord_tone(
@@ -493,19 +708,19 @@ def _invention_exposition(
     ]
     voices[1].extend(ans_notes)
 
-    # 3. Harmonic-melody CP for Voice 0 while Voice 1 plays
-    #    Use slower rhythm for accompaniment → rhythmic contrast
+    # 3. Counterpoint for Voice 0 while Voice 1 plays answer.
+    #    Use INVERTED subject head as a running motif sequence —
+    #    this creates the imitative texture Bach uses from bar 1.
     last_subj_p = subj_notes[-1].pitch if subj_notes else 72
-    slow_rhythm = _cp_rhythm(subject)
-    cp_notes = _generate_harmonic_melody(
-        subject=subject, voice=0,
-        start_offset=subject.duration,
-        duration=subject.duration,
-        existing_voices=voices,
-        config=config,
-        harmonic_skeleton=harmonic_skeleton,
-        start_pitch=last_subj_p,
-        rhythm_override=slow_rhythm,
+    motif = _extract_motif(subject, max_notes=4)
+    inv_motif = _invert_motif(motif)
+    cp_notes = _generate_sequence(
+        inv_motif, last_subj_p, subject.duration, subject.duration,
+        voice=0, scale_pcs=config.scale_pcs,
+        lo=config.voice_ranges.get(0, (60, 84))[0],
+        hi=config.voice_ranges.get(0, (60, 84))[1],
+        direction=-1,
+        other_voice_notes=ans_notes,
     )
     voices[0].extend(cp_notes)
 
@@ -530,10 +745,18 @@ def _generate_invention_entry(
     config: GenerationConfig,
     harmonic_skeleton: list[ChordLabel] | None,
 ) -> None:
-    """One voice states theme, other gets harmonic-melody CP."""
+    """
+    One voice states the theme, the other plays motif-derived counterpoint.
+
+    The CP voice uses the INVERTED subject head as a running sequence,
+    creating the imitative texture that characterises Bach's entries.
+    Falls back to sustained harmonic support if the inverted sequence
+    would create too many dissonances.
+    """
     trans = _key_to_transposition(section.key_area, plan.key_signature)
 
     # Place theme
+    theme_notes_all = []
     for entry in section.entries:
         subj_notes = place_subject(
             plan.subject, entry.voice, entry.start_offset,
@@ -541,25 +764,42 @@ def _generate_invention_entry(
         )
         subj_notes = _adjust_to_voice_range(subj_notes, entry.voice, config)
         voices.setdefault(entry.voice, []).extend(subj_notes)
+        theme_notes_all.extend(subj_notes)
 
-    # Other voice gets harmonic CP with slower rhythm for contrast
+    # CP voice: inverted motif sequence against the theme
     entry_voices = {e.voice for e in section.entries}
-    slow_rhythm = _cp_rhythm(plan.subject)
+    motif = _extract_motif(plan.subject, max_notes=4)
+    inv_motif = _invert_motif(motif)
+
     for v in range(2):
         if v in entry_voices:
             continue
+        lo, hi = config.voice_ranges.get(v, (36, 84))
         prev_notes = sorted(voices.get(v, []), key=lambda n: n.offset)
-        start_p = prev_notes[-1].pitch if prev_notes else None
-        cp = _generate_harmonic_melody(
-            subject=plan.subject, voice=v,
-            start_offset=section.start_offset,
-            duration=section.estimated_duration,
-            existing_voices=voices, config=config,
-            harmonic_skeleton=harmonic_skeleton,
-            start_pitch=start_p,
-            rhythm_override=slow_rhythm,
+        start_p = prev_notes[-1].pitch if prev_notes else (lo + hi) // 2
+
+        # Use inverted motif sequence as CP
+        cp_notes = _generate_sequence(
+            inv_motif, start_p, section.start_offset,
+            section.estimated_duration, voice=v,
+            scale_pcs=config.scale_pcs, lo=lo, hi=hi,
+            direction=-1,
+            other_voice_notes=theme_notes_all,
         )
-        voices.setdefault(v, []).extend(cp)
+
+        # If sequence is too short (didn't fill), pad with sustained notes
+        seq_end = cp_notes[-1].offset + cp_notes[-1].duration if cp_notes else section.start_offset
+        if seq_end < section.start_offset + section.estimated_duration - 0.1:
+            pad_start = seq_end
+            pad_dur = section.start_offset + section.estimated_duration - seq_end
+            pad_p = cp_notes[-1].pitch if cp_notes else start_p
+            pad = _generate_sustained_bass(
+                pad_start, pad_dur, v, lo, hi, pad_p,
+                config.scale_pcs, harmonic_skeleton, theme_notes_all,
+            )
+            cp_notes.extend(pad)
+
+        voices.setdefault(v, []).extend(cp_notes)
 
 
 # -------- Episode --------
@@ -572,54 +812,77 @@ def _generate_invention_episode(
     harmonic_skeleton: list[ChordLabel] | None,
 ) -> None:
     """
-    Episode with rhythmic alternation (Bach-style):
-      First half:  V0 runs (subject rhythm), V1 sustains (slow rhythm)
-      Second half: V1 runs, V0 sustains — swap roles
+    Bach-style motivic episode:
 
-    This creates the characteristic complementary-rhythm texture
-    instead of both voices playing dense figuration simultaneously.
+      The subject head motif is SEQUENCED (repeated at successively
+      lower/higher diatonic pitch levels). One voice runs the sequence
+      while the other provides sustained harmonic support.
+      Halfway through, the voices swap roles.
+
+    This is the single most important technique in Bach's inventions.
     """
     ep_start = section.start_offset
     ep_dur = section.estimated_duration
-    half = round(ep_dur / 2.0 / 0.25) * 0.25  # quantise split point
+    half = round(ep_dur / 2.0 / 0.25) * 0.25
     if half < 0.5:
-        half = ep_dur  # too short to split
+        half = ep_dur
 
-    fast_rhythm = _extract_rhythm(plan.subject)
-    slow_rhythm = _cp_rhythm(plan.subject)
+    # Extract head motif (first ~4 notes) — the building block of episodes
+    motif = _extract_motif(plan.subject, max_notes=4)
+    inv_motif = _invert_motif(motif)
+    scale_pcs = config.scale_pcs
 
-    # --- First half: V0 runs, V1 sustains ---
-    for v, rhythm in [(0, fast_rhythm), (1, slow_rhythm)]:
-        dur = half
-        prev_notes = sorted(voices.get(v, []), key=lambda n: n.offset)
-        start_p = prev_notes[-1].pitch if prev_notes else None
-        cp = _generate_harmonic_melody(
-            subject=plan.subject, voice=v,
-            start_offset=ep_start, duration=dur,
-            existing_voices=voices, config=config,
-            harmonic_skeleton=harmonic_skeleton,
-            start_pitch=start_p,
-            role=EntryRole.EPISODE_MATERIAL,
-            rhythm_override=rhythm,
-        )
-        voices.setdefault(v, []).extend(cp)
+    # Determine sequence direction from section's key movement
+    # Descending sequences are most common (moving toward dominant)
+    seq_dir = -1
 
-    # --- Second half: swap — V1 runs, V0 sustains ---
+    # --- First half: V0 runs sequence, V1 sustains ---
+    lo0, hi0 = config.voice_ranges.get(0, (60, 84))
+    lo1, hi1 = config.voice_ranges.get(1, (36, 60))
+
+    prev0 = sorted(voices.get(0, []), key=lambda n: n.offset)
+    prev1 = sorted(voices.get(1, []), key=lambda n: n.offset)
+    start_p0 = prev0[-1].pitch if prev0 else (lo0 + hi0) // 2
+    start_p1 = prev1[-1].pitch if prev1 else (lo1 + hi1) // 2
+
+    # V0: descending sequence with subject head motif
+    seq_notes_0 = _generate_sequence(
+        motif, start_p0, ep_start, half, voice=0,
+        scale_pcs=scale_pcs, lo=lo0, hi=hi0, direction=seq_dir,
+    )
+    # V1: sustained harmonic support, checking against V0's sequence
+    bass_notes_1 = _generate_sustained_bass(
+        ep_start, half, voice=1, lo=lo1, hi=hi1,
+        start_pitch=start_p1, scale_pcs=scale_pcs,
+        harmonic_skeleton=harmonic_skeleton,
+        other_voice_notes=seq_notes_0,
+    )
+
+    voices.setdefault(0, []).extend(seq_notes_0)
+    voices.setdefault(1, []).extend(bass_notes_1)
+
+    # --- Second half: V1 runs INVERTED sequence, V0 sustains ---
     if half < ep_dur:
         remaining = ep_dur - half
-        for v, rhythm in [(1, fast_rhythm), (0, slow_rhythm)]:
-            prev_notes = sorted(voices.get(v, []), key=lambda n: n.offset)
-            start_p = prev_notes[-1].pitch if prev_notes else None
-            cp = _generate_harmonic_melody(
-                subject=plan.subject, voice=v,
-                start_offset=ep_start + half, duration=remaining,
-                existing_voices=voices, config=config,
-                harmonic_skeleton=harmonic_skeleton,
-                start_pitch=start_p,
-                role=EntryRole.EPISODE_MATERIAL,
-                rhythm_override=rhythm,
-            )
-            voices.setdefault(v, []).extend(cp)
+        # V1's starting pitch for second half
+        sp1 = bass_notes_1[-1].pitch if bass_notes_1 else start_p1
+        sp0 = seq_notes_0[-1].pitch if seq_notes_0 else start_p0
+
+        # V1: ascending sequence with inverted motif (contrary motion)
+        seq_notes_1 = _generate_sequence(
+            inv_motif, sp1, ep_start + half, remaining, voice=1,
+            scale_pcs=scale_pcs, lo=lo1, hi=hi1, direction=-seq_dir,
+        )
+        # V0: sustained support
+        bass_notes_0 = _generate_sustained_bass(
+            ep_start + half, remaining, voice=0, lo=lo0, hi=hi0,
+            start_pitch=sp0, scale_pcs=scale_pcs,
+            harmonic_skeleton=harmonic_skeleton,
+            other_voice_notes=seq_notes_1,
+        )
+
+        voices[1].extend(seq_notes_1)
+        voices[0].extend(bass_notes_0)
 
 
 # -------- Coda --------
@@ -642,21 +905,31 @@ def _generate_invention_coda(
     cadence_beats = min(2.0, duration)
     free_dur = max(0, duration - cadence_beats)
 
-    # Lead-in — use slower rhythm (winding down toward cadence)
-    slow_rhythm = _cp_rhythm(subject)
+    # Lead-in — descending motif sequence winding toward cadence
     if free_dur > 0.5:
-        for v in range(2):
-            prev = sorted(voices.get(v, []), key=lambda n: n.offset)
-            sp = prev[-1].pitch if prev else None
-            cp = _generate_harmonic_melody(
-                subject=subject, voice=v,
-                start_offset=start_offset, duration=free_dur,
-                existing_voices=voices, config=config,
-                harmonic_skeleton=harmonic_skeleton,
-                start_pitch=sp,
-                rhythm_override=slow_rhythm,
-            )
-            voices.setdefault(v, []).extend(cp)
+        motif = _extract_motif(subject, max_notes=4)
+        lo0, hi0 = config.voice_ranges.get(0, (60, 84))
+        lo1, hi1 = config.voice_ranges.get(1, (36, 60))
+
+        prev0 = sorted(voices.get(0, []), key=lambda n: n.offset)
+        prev1 = sorted(voices.get(1, []), key=lambda n: n.offset)
+        sp0 = prev0[-1].pitch if prev0 else (lo0 + hi0) // 2
+        sp1 = prev1[-1].pitch if prev1 else (lo1 + hi1) // 2
+
+        # V0: descending sequence
+        seq0 = _generate_sequence(
+            motif, sp0, start_offset, free_dur, voice=0,
+            scale_pcs=config.scale_pcs, lo=lo0, hi=hi0, direction=-1,
+        )
+        # V1: sustained support under V0's sequence
+        bass1 = _generate_sustained_bass(
+            start_offset, free_dur, voice=1, lo=lo1, hi=hi1,
+            start_pitch=sp1, scale_pcs=config.scale_pcs,
+            harmonic_skeleton=harmonic_skeleton,
+            other_voice_notes=seq0,
+        )
+        voices.setdefault(0, []).extend(seq0)
+        voices.setdefault(1, []).extend(bass1)
 
     # V -> I cadence
     cad_off = start_offset + free_dur
