@@ -8,6 +8,7 @@ and countersubject fragments.
 
 from __future__ import annotations
 
+import random
 from typing import Optional
 
 from .representation import EntryRole, FugueNote, Subject
@@ -17,6 +18,69 @@ from .candidates import (
     _check_hidden_fifth_octave,
 )
 from .harmony import ChordLabel, get_chord_at
+
+
+# ---------------------------------------------------------------------------
+# Rhythmic variation patterns for episode sequences
+# ---------------------------------------------------------------------------
+
+def _vary_rhythm(motif_notes: list[FugueNote], seq_idx: int) -> list[FugueNote]:
+    """
+    Apply subtle rhythmic variation to a motif repetition.
+    Bach's sequences vary rhythm slightly to maintain interest.
+    seq_idx 0 = original, 1+ = progressively more varied.
+    """
+    if seq_idx == 0 or not motif_notes:
+        return motif_notes  # first statement: original rhythm
+
+    varied = []
+    for i, mn in enumerate(motif_notes):
+        dur = mn.duration
+        # Apply subtle variation based on sequence index and note position
+        if seq_idx >= 2 and i == len(motif_notes) - 1:
+            # Last note of later sequences: slightly longer (phrase breathing)
+            dur = dur * 1.5
+        elif seq_idx >= 1 and i == 0 and random.random() < 0.3:
+            # First note occasionally lengthened (agogic accent)
+            dur = dur * 1.5
+        elif seq_idx >= 1 and random.random() < 0.15:
+            # Occasional dotted rhythm
+            dur = dur * (1.5 if random.random() < 0.5 else 0.75)
+
+        # Ensure minimum duration
+        dur = max(0.25, dur)
+
+        varied.append(FugueNote(
+            pitch=mn.pitch,
+            duration=dur,
+            voice=mn.voice,
+            offset=mn.offset,
+            role=mn.role,
+        ))
+    return varied
+
+
+def _vary_interval(base_pitch: int, motif_pitch: int, seq_idx: int,
+                   scale_pcs: frozenset[int]) -> int:
+    """
+    Apply subtle intervallic variation to sequence repetitions.
+    Returns adjusted pitch. Later repetitions have more freedom.
+    """
+    if seq_idx == 0:
+        return motif_pitch  # first statement: exact
+
+    # Small chance of ornamental variation (neighbor note, passing tone)
+    if random.random() < 0.12 * seq_idx:  # 12% per repetition
+        adj = random.choice([-1, 1, -2, 2])
+        varied = motif_pitch + adj
+        # Prefer in-scale adjustments
+        if scale_pcs and (varied % 12) not in scale_pcs:
+            varied = motif_pitch - adj  # try opposite
+            if scale_pcs and (varied % 12) not in scale_pcs:
+                varied = motif_pitch  # give up, use original
+        return varied
+
+    return motif_pitch
 
 
 # ---------------------------------------------------------------------------
@@ -89,13 +153,26 @@ def generate_episode(
         if offset >= start_offset + duration:
             break
 
-        motif_base = motif_notes[0].offset
-        for mn in motif_notes:
-            note_offset = offset + (mn.offset - motif_base)
-            if note_offset >= start_offset + duration:
+        # Apply rhythmic variation to this sequence repetition
+        varied_motif = _vary_rhythm(motif_notes, seq_idx)
+
+        # Recalculate motif duration for varied rhythm
+        if varied_motif:
+            seq_dur = sum(n.duration for n in varied_motif)
+        else:
+            seq_dur = motif_dur
+
+        motif_base = varied_motif[0].offset if varied_motif else 0.0
+        note_time = offset
+        for mi, mn in enumerate(varied_motif):
+            if note_time >= start_offset + duration:
                 break
 
-            candidate_pitch = mn.pitch + transposition
+            # Apply intervallic variation
+            raw_pitch = mn.pitch + transposition
+            candidate_pitch = _vary_interval(
+                mn.pitch, raw_pitch, seq_idx, config.scale_pcs,
+            )
             # Clamp to voice range
             candidate_pitch = max(lo, min(hi, candidate_pitch))
 
@@ -105,7 +182,7 @@ def generate_episode(
                 if v == voice:
                     continue
                 for n in v_notes:
-                    if n.offset <= note_offset < n.offset + n.duration:
+                    if n.offset <= note_time < n.offset + n.duration:
                         other_current[v] = n.pitch
                         break
 
@@ -144,7 +221,7 @@ def generate_episode(
                         1 for op in other_current.values()
                         if op != -1 and is_consonance(p - op)
                     )
-                    is_strong = abs(note_offset - round(note_offset)) < 0.01
+                    is_strong = abs(note_time - round(note_time)) < 0.01
                     sc += cons * 2.5
                     if is_strong:
                         sc += cons * 2.5
@@ -158,7 +235,7 @@ def generate_episode(
 
                     # Chord tone bonus from harmonic skeleton
                     if harmonic_skeleton:
-                        chord = get_chord_at(harmonic_skeleton, note_offset)
+                        chord = get_chord_at(harmonic_skeleton, note_time)
                         if chord:
                             if p % 12 in chord.chord_pcs:
                                 sc += 5 if is_strong else 2.5
@@ -191,7 +268,7 @@ def generate_episode(
                             for ov, oc in other_current.items():
                                 if oc == -1:
                                     continue
-                                prev_t = note_offset - 0.5
+                                prev_t = note_time - 0.5
                                 op_prev = oc
                                 for vn in existing_voices.get(ov, []):
                                     if vn.offset <= prev_t < vn.offset + vn.duration:
@@ -220,11 +297,12 @@ def generate_episode(
                 pitch=candidate_pitch,
                 duration=mn.duration,
                 voice=voice,
-                offset=note_offset,
+                offset=note_time,
                 role=EntryRole.EPISODE_MATERIAL,
             ))
+            note_time += mn.duration
 
-        offset += motif_dur
+        offset += seq_dur
         transposition += sequence_interval
 
     return result

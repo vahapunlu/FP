@@ -75,6 +75,65 @@ from .postprocess import (  # noqa: F401
 
 
 # ---------------------------------------------------------------------------
+# Dramaturgy — energy curve across the piece (U6)
+# ---------------------------------------------------------------------------
+
+def _apply_dramaturgy(
+    config: GenerationConfig,
+    progress: float,
+    section_type: SectionType,
+) -> GenerationConfig:
+    """
+    Adjust generation parameters based on position in the piece.
+    Creates an energy arc: calm opening → building tension → climax → resolution.
+
+    progress: 0.0 (start) to 1.0 (end)
+    """
+    import copy
+    dc = copy.copy(config)
+    dc.voice_ranges = dict(config.voice_ranges)  # deep copy ranges
+
+    if section_type == SectionType.CODA:
+        # Coda: calm, resolved, longer notes
+        dc.step_resolution = 0.5
+        dc.phrase_length = 6.0  # longer phrases
+        dc.temperature = 0.3    # more predictable
+        return dc
+
+    # Energy curve: 0→0.3 calm, 0.3→0.7 building, 0.7→0.9 climax, 0.9→1.0 resolution
+    if progress < 0.3:
+        # Opening: moderate register, steady rhythm
+        dc.step_resolution = 0.5
+        dc.temperature = 0.35
+        dc.phrase_length = 4.0
+    elif progress < 0.7:
+        # Development: expanding register, more rhythmic variety
+        energy = (progress - 0.3) / 0.4  # 0→1 within this phase
+        dc.step_resolution = 0.5
+        dc.temperature = 0.35 + energy * 0.1
+        dc.phrase_length = 4.0 - energy * 1.0  # shorter phrases = more energy
+        for v in dc.voice_ranges:
+            lo, hi = dc.voice_ranges[v]
+            expand = int(energy * 3)
+            dc.voice_ranges[v] = (max(36, lo - expand), hi + expand)
+    elif progress < 0.9:
+        # Climax: widest register, most rhythmic density
+        dc.step_resolution = 0.5
+        dc.temperature = 0.45
+        dc.phrase_length = 3.0
+        for v in dc.voice_ranges:
+            lo, hi = dc.voice_ranges[v]
+            dc.voice_ranges[v] = (max(36, lo - 3), hi + 3)
+    else:
+        # Resolution: narrowing back, calming
+        dc.step_resolution = 0.5
+        dc.temperature = 0.3
+        dc.phrase_length = 5.0
+
+    return dc
+
+
+# ---------------------------------------------------------------------------
 # Full fugue generator
 # ---------------------------------------------------------------------------
 
@@ -121,11 +180,25 @@ def generate_fugue(
         progress = (
             sec_idx / max(1, total_sections - 1) if total_sections > 1 else 0.0
         )
+
+        # --- U6: Dramaturgy — adjust config based on piece progress ---
+        section_config = _apply_dramaturgy(config, progress, section.section_type)
+
         if section.section_type == SectionType.EXPOSITION:
             continue  # already done
 
         elif section.section_type == SectionType.EPISODE:
-            # Episode: use episode-specific harmonic progression
+            # Episode: modulate through related keys with pivot chords
+            # Parse modulation target from key_area (e.g., "C→G" or "c→Eb")
+            mod_target = None
+            if section.key_area and "→" in section.key_area:
+                parts = section.key_area.split("→")
+                if len(parts) == 2:
+                    target_key = parts[1].strip()
+                    target_pc = key_name_to_pc(target_key)
+                    target_minor = key_is_minor(target_key)
+                    mod_target = (target_pc, target_minor)
+
             ep_skeleton = generate_harmonic_skeleton(
                 tonic_pc, is_minor,
                 section.start_offset,
@@ -133,9 +206,10 @@ def generate_fugue(
                 beats_per_chord=2.0,
                 section_type="episode",
                 progression_idx=sec_idx,
+                modulation_target=mod_target,
             )
             _generate_episode_section(
-                plan, section, voices, countersubject, config,
+                plan, section, voices, countersubject, section_config,
                 harmonic_skeleton=ep_skeleton,
             )
 
@@ -151,7 +225,7 @@ def generate_fugue(
                 progression_idx=sec_idx,
             )
             _generate_entry_section(
-                plan, section, voices, countersubject, config, progress,
+                plan, section, voices, countersubject, section_config, progress,
                 harmonic_skeleton=entry_skeleton,
             )
 
@@ -162,7 +236,7 @@ def generate_fugue(
                 section.start_offset,
                 section.estimated_duration,
                 voices,
-                config,
+                section_config,
             )
             for v, v_notes in coda_notes.items():
                 voices.setdefault(v, []).extend(v_notes)

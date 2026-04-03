@@ -113,9 +113,61 @@ _MINOR_PROGRESSIONS = [
     ["i", "iv", "i", "V", "III", "iv", "V", "i"],
 ]
 
-# Episode progressions: sequences that modulate
+# Episode progressions: sequences that modulate through related keys
+# Each tuple: (roman_numeral, optional_tonicization_target)
 _EPISODE_MAJOR = ["I", "V", "ii", "vi", "iii", "vii°", "IV", "I"]
 _EPISODE_MINOR = ["i", "V", "ii°", "VI", "III", "vii°", "iv", "i"]
+
+
+# ---------------------------------------------------------------------------
+# Related key utilities for modulation
+# ---------------------------------------------------------------------------
+
+_RELATED_KEYS_MAJOR = {
+    # tonic_pc -> [(related_pc, is_minor), ...] ordered by closeness
+    # dominant, relative minor, subdominant, supertonic minor, mediant minor
+}
+
+def _get_related_keys(tonic_pc: int, is_minor: bool) -> list[tuple[int, bool]]:
+    """Return related keys ordered by closeness (for modulation targets)."""
+    if is_minor:
+        return [
+            ((tonic_pc + 3) % 12, False),   # relative major
+            ((tonic_pc + 7) % 12, True),     # dominant minor (or major)
+            ((tonic_pc + 5) % 12, True),     # subdominant minor
+            ((tonic_pc + 7) % 12, False),    # dominant major
+            ((tonic_pc + 10) % 12, False),   # subtonic major
+        ]
+    else:
+        return [
+            ((tonic_pc + 7) % 12, False),    # dominant major
+            ((tonic_pc + 9) % 12, True),     # relative minor
+            ((tonic_pc + 5) % 12, False),    # subdominant major
+            ((tonic_pc + 2) % 12, True),     # supertonic minor
+            ((tonic_pc + 4) % 12, True),     # mediant minor
+        ]
+
+
+def _find_pivot_chord(
+    from_tonic: int, from_minor: bool,
+    to_tonic: int, to_minor: bool,
+) -> tuple[str, int, frozenset[int]]:
+    """
+    Find a pivot chord common to both keys.
+    Returns (function_name, root_pc, chord_pcs).
+    """
+    from_chords = _build_diatonic_chords(from_tonic, from_minor)
+    to_chords = _build_diatonic_chords(to_tonic, to_minor)
+
+    # Find a chord whose pitch classes exist in both keys
+    for rn_from, (root_from, pcs_from) in from_chords.items():
+        for rn_to, (root_to, pcs_to) in to_chords.items():
+            if pcs_from == pcs_to:
+                return f"{rn_from}={rn_to}", root_from, pcs_from
+
+    # Fallback: use V of target key
+    dom_pc = (to_tonic + 7) % 12
+    return "V/new", dom_pc, _triad(dom_pc, "major")
 
 
 # ---------------------------------------------------------------------------
@@ -130,6 +182,7 @@ def generate_harmonic_skeleton(
     beats_per_chord: float = 2.0,
     section_type: str = "normal",  # "normal", "episode", "cadence"
     progression_idx: int = 0,
+    modulation_target: tuple[int, bool] | None = None,  # (target_pc, target_is_minor)
 ) -> list[ChordLabel]:
     """
     Generate a sequence of ChordLabels for a section.
@@ -139,9 +192,10 @@ def generate_harmonic_skeleton(
         is_minor: True for minor keys
         start_offset: where this section starts
         duration: how long the section is
-        beats_per_chord: harmonic rhythm (default: chord changes every 2 beats)
+        beats_per_chord: harmonic rhythm
         section_type: affects which progression template to use
         progression_idx: which template variation to pick
+        modulation_target: if given, modulate from tonic to this key via pivot chord
 
     Returns:
         List of ChordLabels covering the section duration.
@@ -152,7 +206,6 @@ def generate_harmonic_skeleton(
     if section_type == "episode":
         prog = _EPISODE_MINOR if is_minor else _EPISODE_MAJOR
     elif section_type == "cadence":
-        # Short cadential: IV/iv → V → I/i
         tonic_rn = "i" if is_minor else "I"
         sub_rn = "iv" if is_minor else "IV"
         prog = [sub_rn, "V", tonic_rn]
@@ -160,6 +213,57 @@ def generate_harmonic_skeleton(
     else:
         progs = _MINOR_PROGRESSIONS if is_minor else _MAJOR_PROGRESSIONS
         prog = progs[progression_idx % len(progs)]
+
+    # --- U4: Modulation with pivot chord ---
+    if modulation_target and section_type == "episode":
+        target_pc, target_minor = modulation_target
+        target_chords = _build_diatonic_chords(target_pc, target_minor)
+
+        # Build a modulating progression:
+        # 1. Start in home key (first ~40% of section)
+        # 2. Pivot chord (common to both keys)
+        # 3. Continue in target key (last ~40%)
+        # 4. Cadence in target key (V→I)
+        pivot_fn, pivot_root, pivot_pcs = _find_pivot_chord(
+            tonic_pc, is_minor, target_pc, target_minor,
+        )
+
+        result: list[ChordLabel] = []
+        offset = start_offset
+        end = start_offset + duration
+        phase_dur = duration / 3.0
+
+        # Phase 1: Home key
+        home_idx = 0
+        while offset < start_offset + phase_dur - 0.01:
+            rn = prog[home_idx % len(prog)]
+            root_pc, chord_pcs = chords_dict.get(rn, (tonic_pc, _triad(tonic_pc, "major")))
+            dur = min(beats_per_chord, end - offset)
+            result.append(ChordLabel(offset=offset, duration=dur, root_pc=root_pc,
+                                     chord_pcs=chord_pcs, function=rn))
+            offset += dur
+            home_idx += 1
+
+        # Phase 2: Pivot chord
+        dur = min(beats_per_chord, end - offset)
+        result.append(ChordLabel(offset=offset, duration=dur, root_pc=pivot_root,
+                                 chord_pcs=pivot_pcs, function=pivot_fn))
+        offset += dur
+
+        # Phase 3: Target key progression + cadence
+        target_prog = _EPISODE_MINOR if target_minor else _EPISODE_MAJOR
+        target_idx = 0
+        while offset < end - 0.01:
+            rn = target_prog[target_idx % len(target_prog)]
+            root_pc, chord_pcs = target_chords.get(rn, (target_pc, _triad(target_pc, "major")))
+            dur = min(beats_per_chord, end - offset)
+            is_cad = (offset + dur >= end - 0.01) and rn in ("V", "I", "i")
+            result.append(ChordLabel(offset=offset, duration=dur, root_pc=root_pc,
+                                     chord_pcs=chord_pcs, function=rn, is_cadential=is_cad))
+            offset += dur
+            target_idx += 1
+
+        return result
 
     # Generate chord labels
     result: list[ChordLabel] = []
