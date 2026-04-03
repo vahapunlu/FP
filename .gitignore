@@ -12,3 +12,4 @@ output/
 _bench.py
 *.mid
 *.midi
+.venv/
