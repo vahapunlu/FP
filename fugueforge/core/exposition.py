@@ -20,12 +20,14 @@ from .representation import (
 from .candidates import GenerationConfig
 from .placement import place_subject, place_answer, _get_transposition
 from .counterpoint import generate_free_counterpoint, _place_countersubject
+from .harmony import ChordLabel
 
 
 def generate_exposition(
     plan: ExpositionPlan,
     subject: Subject,
     config: Optional[GenerationConfig] = None,
+    harmonic_skeleton: Optional[list[ChordLabel]] = None,
 ) -> tuple[dict[int, list[FugueNote]], list[FugueNote]]:
     """
     Generate the exposition according to the plan.
@@ -97,6 +99,7 @@ def generate_exposition(
                         existing_voices=voices,
                         start_pitch=last_pitch,
                         config=config,
+                        harmonic_skeleton=harmonic_skeleton,
                     )
 
                 # Capture countersubject from the 1st voice's counterpoint

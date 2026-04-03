@@ -59,6 +59,13 @@ from .counterpoint import (  # noqa: F401
 from .episodes import generate_episode  # noqa: F401
 from .exposition import generate_exposition  # noqa: F401
 from .coda import generate_coda  # noqa: F401
+from .harmony import (  # noqa: F401
+    generate_harmonic_skeleton,
+    key_name_to_pc,
+    key_is_minor,
+    get_chord_at,
+    ChordLabel,
+)
 from .postprocess import (  # noqa: F401
     _postprocess_climax_placement,
     _postprocess_fix_dissonances,
@@ -93,8 +100,20 @@ def generate_fugue(
     # Adapt voice ranges to the subject's actual pitch range
     config = _adapt_voice_ranges(config, plan.subject, plan.num_voices)
 
+    # Build harmonic skeleton for the entire piece
+    tonic_pc = key_name_to_pc(plan.key_signature)
+    is_minor = key_is_minor(plan.key_signature)
+    total_dur = sum(s.estimated_duration for s in plan.sections)
+    full_skeleton = generate_harmonic_skeleton(
+        tonic_pc, is_minor, 0.0, total_dur,
+        beats_per_chord=2.0,
+        section_type="normal",
+    )
+
     # Generate exposition (also captures countersubject)
-    voices, countersubject = generate_exposition(plan.exposition, plan.subject, config)
+    voices, countersubject = generate_exposition(
+        plan.exposition, plan.subject, config, harmonic_skeleton=full_skeleton,
+    )
 
     # Process remaining sections
     total_sections = len(plan.sections)
@@ -106,13 +125,34 @@ def generate_fugue(
             continue  # already done
 
         elif section.section_type == SectionType.EPISODE:
+            # Episode: use episode-specific harmonic progression
+            ep_skeleton = generate_harmonic_skeleton(
+                tonic_pc, is_minor,
+                section.start_offset,
+                section.estimated_duration,
+                beats_per_chord=2.0,
+                section_type="episode",
+                progression_idx=sec_idx,
+            )
             _generate_episode_section(
                 plan, section, voices, countersubject, config,
+                harmonic_skeleton=ep_skeleton,
             )
 
         elif section.section_type in (SectionType.MIDDLE_ENTRY, SectionType.STRETTO):
+            # Entry sections: use normal progression in the section's key
+            entry_tonic = key_name_to_pc(section.key_area) if section.key_area else tonic_pc
+            entry_skeleton = generate_harmonic_skeleton(
+                entry_tonic, is_minor,
+                section.start_offset,
+                section.estimated_duration,
+                beats_per_chord=2.0,
+                section_type="normal",
+                progression_idx=sec_idx,
+            )
             _generate_entry_section(
                 plan, section, voices, countersubject, config, progress,
+                harmonic_skeleton=entry_skeleton,
             )
 
         elif section.section_type == SectionType.CODA:
@@ -146,6 +186,7 @@ def _generate_episode_section(
     voices: dict[int, list[FugueNote]],
     countersubject: list[FugueNote],
     config: GenerationConfig,
+    harmonic_skeleton: list[ChordLabel] | None = None,
 ) -> None:
     """Generate episodes voice by voice, staggered for imitative texture."""
     motif_dur = sum(
@@ -178,6 +219,7 @@ def _generate_episode_section(
             config=config,
             source=episode_sources[v % len(episode_sources)],
             countersubject=countersubject,
+            harmonic_skeleton=harmonic_skeleton,
         )
         voices.setdefault(v, []).extend(ep_notes)
 
@@ -189,6 +231,7 @@ def _generate_entry_section(
     countersubject: list[FugueNote],
     config: GenerationConfig,
     progress: float,
+    harmonic_skeleton: list[ChordLabel] | None = None,
 ) -> None:
     """Generate middle entry or stretto section with subject placements."""
     trans = _key_to_transposition(section.key_area, plan.key_signature)
@@ -240,5 +283,6 @@ def _generate_entry_section(
                 existing_voices=voices,
                 config=config,
                 progress=progress,
+                harmonic_skeleton=harmonic_skeleton,
             )
         voices.setdefault(v, []).extend(cp)

@@ -16,6 +16,7 @@ from .candidates import (
     GenerationConfig,
     _check_hidden_fifth_octave,
 )
+from .harmony import ChordLabel, get_chord_at
 
 
 # ---------------------------------------------------------------------------
@@ -33,6 +34,7 @@ def generate_episode(
     config: Optional[GenerationConfig] = None,
     source: str = "subject_head",
     countersubject: Optional[list[FugueNote]] = None,
+    harmonic_skeleton: Optional[list[ChordLabel]] = None,
 ) -> list[FugueNote]:
     """
     Generate an episode by creating a sequence pattern from subject material.
@@ -132,6 +134,15 @@ def generate_episode(
                             sc += 8
                         else:
                             sc -= 10 if is_strong else 5
+
+                    # Chord tone bonus from harmonic skeleton
+                    if harmonic_skeleton:
+                        chord = get_chord_at(harmonic_skeleton, note_offset)
+                        if chord:
+                            if p % 12 in chord.chord_pcs:
+                                sc += 6 if is_strong else 3
+                            elif is_strong:
+                                sc -= 3
 
                     # Leap resolution
                     if result and abs(prev_interval) >= 5:

@@ -18,6 +18,7 @@ from .candidates import (
     _candidate_pitches,
     _score_candidate,
 )
+from .harmony import ChordLabel, get_chord_at
 
 
 # ---------------------------------------------------------------------------
@@ -32,6 +33,7 @@ def generate_free_counterpoint(
     start_pitch: Optional[int] = None,
     config: Optional[GenerationConfig] = None,
     progress: float = 0.0,
+    harmonic_skeleton: Optional[list[ChordLabel]] = None,
 ) -> list[FugueNote]:
     """
     Generate free counterpoint for one voice against existing voices.
@@ -89,6 +91,13 @@ def generate_free_counterpoint(
 
         is_strong = (current_offset % 1.0) < 0.01
 
+        # Look up current chord from harmonic skeleton
+        current_chord_pcs: frozenset[int] = frozenset()
+        if harmonic_skeleton:
+            chord = get_chord_at(harmonic_skeleton, current_offset)
+            if chord:
+                current_chord_pcs = chord.chord_pcs
+
         # Generate and score candidates
         candidates = _candidate_pitches(current_pitch, voice, config)
         scored: list[tuple[float, int]] = []
@@ -103,6 +112,7 @@ def generate_free_counterpoint(
                 is_strong_beat=is_strong,
                 prev_interval=prev_melodic_interval,
                 config=config,
+                chord_pcs=current_chord_pcs,
             )
             # Dissonance resolution bonus/penalty
             if prev_was_dissonant and other_current:
@@ -307,6 +317,7 @@ def _place_countersubject(
                 is_strong_beat=is_strong,
                 prev_interval=prev_melodic_interval,
                 config=config,
+                chord_pcs=frozenset(),  # don't constrain CS to chords
             )
             # Penalise deviation from the original CS pitch
             s -= abs(adj) * 3.0

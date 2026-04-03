@@ -68,6 +68,8 @@ def _adapt_voice_ranges(
         contrary_motion_bonus=config.contrary_motion_bonus,
         scale_bonus=config.scale_bonus,
         chromatic_penalty=config.chromatic_penalty,
+        chord_tone_bonus=config.chord_tone_bonus,
+        non_chord_penalty=config.non_chord_penalty,
         scale_pcs=config.scale_pcs if config.scale_pcs else key_to_scale_pcs(subject.key_signature),
         voice_ranges=new_ranges,
     )

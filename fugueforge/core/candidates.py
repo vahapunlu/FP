@@ -43,6 +43,8 @@ class GenerationConfig:
     contrary_motion_bonus: float = 1.5
     scale_bonus: float = 10.0        # bonus for in-scale pitches
     chromatic_penalty: float = 8.0   # penalty for out-of-scale pitches
+    chord_tone_bonus: float = 6.0    # bonus for chord tones on strong beats
+    non_chord_penalty: float = 3.0   # penalty for non-chord tones on strong beats
     scale_pcs: frozenset[int] = frozenset()  # pitch classes in the current key
     voice_ranges: dict[int, tuple[int, int]] = field(
         default_factory=lambda: dict(VOICE_RANGES),
@@ -192,6 +194,7 @@ def _score_candidate(
     is_strong_beat: bool,
     prev_interval: int,
     config: GenerationConfig,
+    chord_pcs: frozenset[int] = frozenset(),
 ) -> tuple[float, bool]:
     """
     Score a candidate pitch. Returns (score, vetoed).
@@ -291,6 +294,20 @@ def _score_candidate(
                     score -= config.chromatic_penalty * 0.3
                 else:
                     score -= config.chromatic_penalty
+
+    # 8b. Chord tone awareness: bonus for hitting the current chord
+    if chord_pcs:
+        candidate_pc = candidate % 12
+        if candidate_pc in chord_pcs:
+            if is_strong_beat:
+                score += config.chord_tone_bonus * 1.5  # Strong beat chord tone
+            else:
+                score += config.chord_tone_bonus * 0.5  # Weak beat chord tone
+        else:
+            # Non-chord tone on strong beat — penalize unless it's a step
+            # (passing tone / neighbor tone are OK on weak beats)
+            if is_strong_beat:
+                score -= config.non_chord_penalty
 
     # 9. Hidden 5ths/8ves (soft penalty)
     for ov, oc in other_voices_current.items():
