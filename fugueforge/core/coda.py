@@ -52,7 +52,8 @@ def generate_coda(
     subj_dur = subject.duration
     bass_voice = num_voices - 1
 
-    working_voices = dict(existing_voices)
+    # Deep copy: avoid mutating the caller's voice lists via shared references
+    working_voices = {v: list(notes) for v, notes in existing_voices.items()}
 
     # Place a final subject statement in the lowest voice if room allows
     if free_dur >= subj_dur and subj_dur > 0:

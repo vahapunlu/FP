@@ -364,3 +364,47 @@ def _generate_entry_section(
                 harmonic_skeleton=harmonic_skeleton,
             )
         voices.setdefault(v, []).extend(cp)
+
+    # Fill gaps in entry voices: add counterpoint before and after subject entries
+    sec_start = section.start_offset
+    sec_end = section.start_offset + section.estimated_duration
+    for entry in section.entries:
+        v = entry.voice
+        # Find subject note time span in this section
+        subj_notes_in_sec = [
+            n for n in voices.get(v, [])
+            if n.offset >= sec_start - 0.01 and n.offset < sec_end + 0.01
+            and n.role in (EntryRole.SUBJECT, EntryRole.ANSWER)
+        ]
+        if not subj_notes_in_sec:
+            continue
+        subj_start = min(n.offset for n in subj_notes_in_sec)
+        subj_end = max(n.offset + n.duration for n in subj_notes_in_sec)
+
+        # Fill before subject entry
+        gap_before = subj_start - sec_start
+        if gap_before > 0.5:
+            cp_before = generate_free_counterpoint(
+                voice=v,
+                start_offset=sec_start,
+                duration=gap_before,
+                existing_voices=voices,
+                config=config,
+                progress=progress,
+                harmonic_skeleton=harmonic_skeleton,
+            )
+            voices.setdefault(v, []).extend(cp_before)
+
+        # Fill after subject entry
+        gap_after = sec_end - subj_end
+        if gap_after > 0.5:
+            cp_after = generate_free_counterpoint(
+                voice=v,
+                start_offset=subj_end,
+                duration=gap_after,
+                existing_voices=voices,
+                config=config,
+                progress=progress,
+                harmonic_skeleton=harmonic_skeleton,
+            )
+            voices.setdefault(v, []).extend(cp_after)

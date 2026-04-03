@@ -166,19 +166,38 @@ def voices_to_score(
     for v in sorted(voices.keys()):
         part = stream.Part()
         part.id = f"Voice {v}"
+        # Sort by offset, then deduplicate exact same offset+pitch
         sorted_notes = sorted(voices[v], key=lambda n: n.offset)
-
-        # Insert notes and fill gaps with rests for clean MIDI output
-        prev_end = 0.0
+        deduped: list = []
         for fn in sorted_notes:
+            if deduped and abs(fn.offset - deduped[-1].offset) < 0.001 and fn.pitch == deduped[-1].pitch:
+                continue  # skip exact duplicate
+            deduped.append(fn)
+        sorted_notes = deduped
+
+        # Insert notes, resolving overlaps: truncate previous note if it bleeds
+        # into the next note's offset (enforce monophonic constraint)
+        prev_end = 0.0
+        for i, fn in enumerate(sorted_notes):
             # Fill gap with rest if needed
             gap = fn.offset - prev_end
             if gap > 0.05:
                 rest = m21note.Rest(quarterLength=round(gap * 4) / 4)  # quantize
                 part.insert(prev_end, rest)
-            el = fn.to_music21()
+
+            # Truncate note duration if it would overlap the next note
+            actual_dur = fn.duration
+            if i + 1 < len(sorted_notes):
+                next_start = sorted_notes[i + 1].offset
+                max_dur = next_start - fn.offset
+                if max_dur > 0.01:
+                    actual_dur = min(actual_dur, max_dur)
+                else:
+                    continue  # skip if next note starts at same time
+
+            el = m21note.Note(fn.pitch, quarterLength=actual_dur)
             part.insert(fn.offset, el)
-            prev_end = max(prev_end, fn.offset + fn.duration)
+            prev_end = max(prev_end, fn.offset + actual_dur)
 
         score.append(part)
 
