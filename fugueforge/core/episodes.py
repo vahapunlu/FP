@@ -120,20 +120,39 @@ def generate_episode(
                     if p < lo or p > hi:
                         continue
 
+                    mel = p - prev_p
+                    abs_mel = abs(mel)
+
+                    # Melodic quality — stepwise strongly preferred
+                    if abs_mel <= 2:
+                        sc = 8.0   # step: excellent
+                    elif abs_mel <= 4:
+                        sc = 3.0   # third: good
+                    elif abs_mel <= 7:
+                        sc = -2.0  # P4/P5: acceptable
+                    else:
+                        sc = -8.0  # large leap: bad
+
+                    # Consecutive leap penalty
+                    if result and abs(prev_interval) >= 3 and abs_mel >= 3:
+                        sc -= 8.0
+                        if (mel > 0) == (prev_interval > 0):
+                            sc -= 4.0  # same direction leaps: worse
+
                     # Consonance score
                     cons = sum(
                         1 for op in other_current.values()
                         if op != -1 and is_consonance(p - op)
                     )
                     is_strong = abs(note_offset - round(note_offset)) < 0.01
-                    sc = cons * 3
+                    sc += cons * 2.5
                     if is_strong:
-                        sc += cons * 3
+                        sc += cons * 2.5
 
                     # Scale/tonality: strongly prefer in-key pitches
                     if config.scale_pcs:
                         if p % 12 in config.scale_pcs:
-                            sc += 8
+                            sc += 7
                         else:
                             sc -= 10 if is_strong else 5
 
@@ -142,19 +161,18 @@ def generate_episode(
                         chord = get_chord_at(harmonic_skeleton, note_offset)
                         if chord:
                             if p % 12 in chord.chord_pcs:
-                                sc += 6 if is_strong else 3
+                                sc += 5 if is_strong else 2.5
                             elif is_strong:
                                 sc -= 3
 
                     # Leap resolution
                     if result and abs(prev_interval) >= 5:
-                        mel = p - prev_p
-                        if abs(mel) <= 2 and (mel * prev_interval < 0):
-                            sc += 8
-                        elif abs(mel) <= 2:
-                            sc += 2
-                        elif abs(mel) > 4:
-                            sc -= 6
+                        if abs_mel <= 2 and (mel * prev_interval < 0):
+                            sc += 10
+                        elif abs_mel <= 2:
+                            sc += 3
+                        elif abs_mel > 4:
+                            sc -= 8
 
                     # Voice crossing penalty (hard)
                     crossing = False
@@ -184,8 +202,14 @@ def generate_episode(
                                 ):
                                     sc -= 4
 
-                    # Prefer minimal deviation from original
-                    sc -= abs(adj) * 1
+                    # Prefer minimal deviation from original (but melodic quality matters more)
+                    sc -= abs(adj) * 0.5
+
+                    # Register gravity: pull toward voice center
+                    voice_center = (lo + hi) / 2
+                    range_half = (hi - lo) / 2
+                    if range_half > 0:
+                        sc -= 1.5 * (abs(p - voice_center) / range_half) ** 2
 
                     if sc > best_score:
                         best_score = sc

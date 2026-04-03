@@ -31,24 +31,34 @@ class GenerationConfig:
     """Parameters for the generation process."""
     beam_width: int = 8
     max_candidates_per_step: int = 24
-    temperature: float = 0.5
+    temperature: float = 0.4
     step_resolution: float = 0.5     # generate in half-beat steps
     prefer_stepwise: float = 0.7     # weight for stepwise motion
     max_leap: int = 12               # max interval in semitones
-    consonance_weight: float = 4.0   # bonus for consonant intervals
+    consonance_weight: float = 3.0   # bonus for consonant intervals (was 4.0)
     dissonance_penalty: float = 8.0  # penalty for dissonance on strong beat
     parallel_veto: bool = True       # hard-reject parallel 5/8/unisons
     crossing_veto: bool = True       # hard-reject voice crossing
     leap_resolution_bonus: float = 12.0
     contrary_motion_bonus: float = 1.5
-    scale_bonus: float = 10.0        # bonus for in-scale pitches
+    scale_bonus: float = 8.0         # bonus for in-scale pitches (was 10.0)
     chromatic_penalty: float = 8.0   # penalty for out-of-scale pitches
-    chord_tone_bonus: float = 6.0    # bonus for chord tones on strong beats
+    chord_tone_bonus: float = 5.0    # bonus for chord tones (was 6.0)
     non_chord_penalty: float = 3.0   # penalty for non-chord tones on strong beats
     scale_pcs: frozenset[int] = frozenset()  # pitch classes in the current key
     voice_ranges: dict[int, tuple[int, int]] = field(
         default_factory=lambda: dict(VOICE_RANGES),
     )
+    # --- Phase 2: Melodic quality ---
+    stepwise_bonus: float = 8.0       # strong bonus for steps (1-2 semitones)
+    third_bonus: float = 3.5          # moderate bonus for thirds
+    fourth_fifth_penalty: float = 1.0 # slight penalty for P4/P5 leaps
+    large_leap_penalty: float = 8.0   # strong penalty for >P5
+    consecutive_leap_penalty: float = 10.0  # penalty for 2+ leaps in a row
+    direction_momentum: float = 3.0   # bonus for continuing melodic direction (2-3 notes)
+    direction_reversal: float = 4.0   # bonus for reversing after 4+ notes same direction
+    register_gravity: float = 2.0     # pull toward voice center
+    phrase_length: float = 4.0        # phrase length in beats for contour shaping
 
 
 # ---------------------------------------------------------------------------
@@ -226,30 +236,39 @@ def _score_candidate(
     mel_interval = candidate - prev_pitch
     abs_interval = abs(mel_interval)
 
-    # 3. Melodic quality
-    if abs_interval <= 2:
-        score += config.prefer_stepwise * 4.0
+    # 3. Melodic quality — STRONG stepwise preference (Phase 2)
+    if abs_interval == 0:
+        score += 1.0  # repetition: mild
+    elif abs_interval <= 2:
+        score += config.stepwise_bonus  # +8: steps are the backbone of melody
     elif abs_interval <= 4:
-        score += 2.0
+        score += config.third_bonus     # +3.5: thirds are good melodic intervals
     elif abs_interval == 5 or abs_interval == 7:
-        score += 1.0
+        score -= config.fourth_fifth_penalty  # -1: acceptable but less common
     elif abs_interval > 7:
-        score -= 2.0
+        score -= config.large_leap_penalty    # -8: large leaps are rare in Bach
 
-    # 4. Leap resolution: after a leap, prefer step in opposite direction
+    # 4. Leap resolution: after a leap, MUST resolve by step in opposite direction
     if abs(prev_interval) >= 5:
         if abs_interval <= 2 and (mel_interval * prev_interval < 0):
-            score += config.leap_resolution_bonus
+            score += config.leap_resolution_bonus      # +12: correct resolution
         elif abs_interval <= 2:
-            score += config.leap_resolution_bonus * 0.3
+            score += config.leap_resolution_bonus * 0.3  # step same dir OK-ish
         elif abs_interval <= 4:
-            score -= 3.0
+            score -= 5.0   # third after leap: poor
         else:
-            score -= 8.0
+            score -= 12.0  # leap after leap: very bad
+
+    # 4b. Consecutive leap penalty: 2+ leaps in a row sound mechanical
+    if abs(prev_interval) >= 3 and abs_interval >= 3:
+        score -= config.consecutive_leap_penalty  # -10: consecutive leaps
+        # Even worse if same direction (zigzag slightly better than staircase)
+        if (mel_interval > 0) == (prev_interval > 0):
+            score -= config.consecutive_leap_penalty * 0.5  # -5 extra
 
     # 5. Augmented/diminished interval check
     if abs_interval == 6:
-        score -= 3.0
+        score -= 5.0  # tritone leap: avoid
 
     # 6. Harmonic quality against each sounding voice
     num_other = len([v for v in other_voices_current.values() if v != -1])
@@ -319,9 +338,18 @@ def _score_candidate(
 
     # 9. Avoid repeated note (except for ties/suspensions)
     if candidate == prev_pitch:
-        score -= 1.0
+        score -= 2.0
 
-    # 10. Slight randomness for variety
+    # 10. Register gravity: pull toward voice center to prevent drifting
+    lo, hi = config.voice_ranges.get(voice, (36, 84))
+    center = (lo + hi) / 2
+    dist_from_center = abs(candidate - center)
+    range_half = (hi - lo) / 2
+    if range_half > 0:
+        # Penalty increases as pitch moves toward range extremes
+        score -= config.register_gravity * (dist_from_center / range_half) ** 2
+
+    # 11. Slight randomness for variety (reduced from before)
     score += random.gauss(0, config.temperature)
 
     return score, False

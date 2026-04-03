@@ -67,6 +67,13 @@ def generate_free_counterpoint(
 
     step = config.step_resolution
 
+    # --- Phase 2: Melodic state tracking ---
+    direction_count = 0      # consecutive notes in same direction (+up, -down)
+    phrase_beat_count = 0.0   # beats since last phrase boundary
+    phrase_len = config.phrase_length + random.uniform(-1.0, 1.0)  # vary phrase length
+    note_count = 0
+    voice_center = (lo + hi) / 2
+
     state = VoiceState()
     state.set_current(voice, current_pitch)
 
@@ -114,6 +121,36 @@ def generate_free_counterpoint(
                 config=config,
                 chord_pcs=current_chord_pcs,
             )
+
+            # --- Phase 2: Direction momentum & contour ---
+            mel = cp - current_pitch
+            # Direction momentum: reward continuing for 2-3 notes, penalize after 4+
+            if mel != 0 and prev_melodic_interval != 0:
+                same_dir = (mel > 0) == (prev_melodic_interval > 0)
+                if same_dir:
+                    if abs(direction_count) <= 3:
+                        s += config.direction_momentum  # +3: natural flow
+                    else:
+                        s -= config.direction_reversal   # -4: time to reverse
+                else:
+                    if abs(direction_count) >= 3:
+                        s += config.direction_reversal   # +4: good reversal point
+
+            # Phrase contour: arch shape within each phrase
+            phrase_pos = phrase_beat_count / max(1.0, phrase_len)
+            if phrase_pos < 0.5:
+                # Rising phase: slight upward bias
+                if mel > 0:
+                    s += 1.5
+                elif mel < -2:
+                    s -= 1.0
+            elif phrase_pos > 0.7:
+                # Falling phase: prefer stepwise descent toward resolution
+                if mel < 0 and abs(mel) <= 2:
+                    s += 2.0
+                elif mel > 2:
+                    s -= 1.5
+
             # Dissonance resolution bonus/penalty
             if prev_was_dissonant and other_current:
                 is_now_consonant = all(
@@ -173,12 +210,26 @@ def generate_free_counterpoint(
             k=1,
         )[0]
 
-        # Determine duration with variety
-        dur = step
-        if is_strong and random.random() < 0.25 and current_offset + step * 2 <= end_offset:
-            dur = step * 2
-        elif random.random() < 0.15 and current_offset + 1.0 <= end_offset:
-            dur = 1.0
+        # --- Phase 2: Phrase-aware duration selection ---
+        phrase_pos = phrase_beat_count / max(1.0, phrase_len)
+        remaining = end_offset - current_offset
+
+        if phrase_pos >= 0.9 and remaining > step * 2:
+            # Phrase boundary: longer note (quarter or half note) = breathing point
+            if random.random() < 0.6:
+                dur = min(2.0, remaining)   # half note at phrase end
+            else:
+                dur = min(1.0, remaining)   # quarter note
+        elif is_strong and random.random() < 0.35 and remaining >= 1.0:
+            dur = 1.0   # quarter note on strong beat
+        elif not is_strong and random.random() < 0.12 and remaining >= 1.5:
+            dur = 1.5   # dotted quarter for variety
+        else:
+            dur = step   # eighth note (default)
+
+        # Last note of piece: make it longer
+        if remaining <= step * 2:
+            dur = remaining
 
         notes.append(FugueNote(
             pitch=chosen_pitch,
@@ -187,6 +238,23 @@ def generate_free_counterpoint(
             offset=current_offset,
             role=EntryRole.FREE_COUNTERPOINT,
         ))
+
+        # --- Phase 2: Update melodic state ---
+        mel_int = chosen_pitch - current_pitch
+        if mel_int > 0:
+            direction_count = direction_count + 1 if direction_count > 0 else 1
+        elif mel_int < 0:
+            direction_count = direction_count - 1 if direction_count < 0 else -1
+        else:
+            direction_count = 0
+
+        phrase_beat_count += dur
+        note_count += 1
+
+        # Reset phrase at boundary
+        if phrase_beat_count >= phrase_len:
+            phrase_beat_count = 0.0
+            phrase_len = config.phrase_length + random.uniform(-1.0, 1.0)
 
         # Track dissonance state for resolution on next beat
         prev_was_dissonant = any(
