@@ -63,29 +63,31 @@ Subject (melody)
 
 ---
 
-## Current Benchmark (v0.1)
+## Current Benchmark (v0.2 — post-refactor)
 
 ```
-BWV    Voices   Search   Theory   Struct   Style   Aesth
-────────────────────────────────────────────────────────
-846    4         93.8     84.9    100.0    91.7   100.0
-847    3         94.9     93.4    100.0    84.3   100.0
-848    3         95.3     96.5    100.0    81.8   100.0
-849    5         92.8     85.3    100.0    91.3    95.0
-850    4         93.8     87.4    100.0    87.8   100.0
-851    3         97.2     95.6    100.0    92.5   100.0
-853    3         97.8     96.2    100.0    96.6    98.0
-855    2         95.2     91.0    100.0    90.0   100.0
-858    3         97.3     95.2    100.0    91.9   100.0
-860    3         97.4     97.2    100.0    91.0   100.0
-861    4         94.6     86.7    100.0    92.8   100.0
-865    4         92.8     86.4    100.0    84.5   100.0
-869    4         96.1     92.6    100.0    93.4   100.0
-────────────────────────────────────────────────────────
-AVG              95.2     91.3    100.0    90.0    99.5
+BWV    Voices  Random  Single  Search  Theory  Struct  Style  Aesth
+─────────────────────────────────────────────────────────────────────
+846    4        41.5    93.8    93.9    84.4   100.0   92.8  100.0
+847    3        52.1    94.5    94.4    91.4   100.0   84.7  100.0
+848    3        53.0    94.9    95.0    95.2   100.0   82.2  100.0
+849    5        35.6    91.7    91.2    81.8   100.0   88.4   95.0
+850    4        43.8    93.0    93.7    86.7   100.0   88.7  100.0
+851    3        49.6    96.5    97.0    96.0   100.0   91.2  100.0
+853    3        52.1    95.9    96.7    95.5   100.0   92.1   98.0
+855    2        63.0    95.3    95.8    90.6   100.0   92.9  100.0
+858    3        56.2    97.4    96.4    94.9   100.0   89.7  100.0
+860    3        49.3    96.8    97.0    95.8   100.0   91.5  100.0
+861    4        43.6    94.5    94.9    89.2   100.0   90.7  100.0
+865    4        42.5    92.1    93.4    89.3   100.0   83.3  100.0
+869    4        42.8    95.9    96.4    92.3   100.0   93.8  100.0
+─────────────────────────────────────────────────────────────────────
+AVG             48.1    94.8    95.1    91.0   100.0   89.4   99.5
 ```
 
-**36/36 tests passing.**
+**Baseline comparison**: Random=48.1, Single-pass=94.8, Search=95.1 (Δ +47.0 vs random, +0.3 vs single)
+
+**36/36 tests passing.** MIDI files generated for all 13 BWVs.
 
 ---
 
@@ -97,7 +99,7 @@ AVG              95.2     91.3    100.0    90.0    99.5
 |---|-------|--------|--------|
 | M1 | **Self-evaluation bias**: Judge is written by us, then we optimize for it. Score 95 means "95% compliant with our own rules" — not "good music" | High | Not addressed |
 | M2 | **No ablation study**: 9+ fixes applied; individual contribution unknown | Medium | Not addressed |
-| M3 | **No baseline comparison**: What does a random generator score? A rule-only (no search) system? | Medium | Not addressed |
+| M3 | **No baseline comparison**: What does a random generator score? A rule-only (no search) system? | Medium | **Addressed** — Random=48.1, Single=94.8, Search=95.1 |
 | M4 | **Tiny corpus**: 13 subjects — possible overfitting to these specific subjects | Medium | Not addressed |
 | M5 | **Stochastic variance**: Each run gives different scores (±1-2 pts). Need 30-run mean ± std | Low | Not addressed |
 
@@ -105,7 +107,7 @@ AVG              95.2     91.3    100.0    90.0    99.5
 
 | # | Issue | Impact | Status |
 |---|-------|--------|--------|
-| U1 | **Never listened**: No MIDI output has been aurally evaluated | Critical | Not addressed |
+| U1 | **Never listened**: No MIDI output has been aurally evaluated | Critical | MIDI generated — awaiting listening |
 | U2 | **Flat harmonic rhythm**: Every note treated equally; no structural vs ornamental distinction | High | Not addressed |
 | U3 | **No phrasing/breath**: Generator produces continuous stream; no phrase boundaries | High | Not addressed |
 | U4 | **Surface-level modulation**: Key changes are transpositions, not real harmonic journeys | High | Not addressed |
@@ -124,14 +126,14 @@ AVG              95.2     91.3    100.0    90.0    99.5
 
 ## Roadmap
 
-### Phase 1: Listen & Validate (Next Session)
+### Phase 1: Listen & Validate (Current)
 > Goal: Ground truth check — does this actually sound like music?
 
-- [ ] Generate MIDI for all 13 BWV subjects
+- [x] Generate MIDI for all 13 BWV subjects → `output/midi/bwv*.mid`
+- [x] Establish baselines: random=48.1, single-pass=94.8, search=95.1
 - [ ] Listen to each one, take notes on what sounds wrong
 - [ ] Identify gaps between judge scores and aural quality
 - [ ] Create a "listening report" mapping subjective impressions to code
-- [ ] Establish baselines: random generator score, no-search score
 
 ### Phase 2: Musical Intelligence (1-2 Sessions)
 > Goal: Address the musical weaknesses that listening reveals
@@ -200,35 +202,42 @@ AVG              95.2     91.3    100.0    90.0    99.5
 | CS capture + rules | 90.2 | Countersubject system, constraint improvements |
 | Burrows thesis | 90.9 | Subject inversion, thematic episodes, thematic coda |
 | Theory/Style attack | **95.2** | Leap resolution, PAC fix, climax placement, post-processors |
+| Refactor + baselines | **95.1** | generator.py split into 8 modules; baselines established |
 
 ---
 
 ## File Locations
 
 ```
-D:\PYT\FP\
-├── .gitignore
-├── pyproject.toml
-├── fugueforge/
+fugueforge/
+├── __init__.py
+├── cli.py
+├── core/
 │   ├── __init__.py
-│   ├── cli.py
-│   ├── core/
-│   │   ├── __init__.py
-│   │   ├── representation.py
-│   │   ├── rules.py
-│   │   ├── analyzer.py
-│   │   ├── planner.py
-│   │   ├── generator.py    ← largest module (~1500 lines)
-│   │   ├── judge.py
-│   │   └── search.py
-│   └── corpus/
-│       ├── __init__.py
-│       ├── gold.py
-│       ├── loader.py
-│       └── pipeline.py
+│   ├── representation.py    (~280 lines)  Data types, enums, conversions
+│   ├── rules.py             (~480 lines)  Counterpoint rule checker
+│   ├── analyzer.py          (~540 lines)  Subject/section/cadence detection
+│   ├── planner.py           (~470 lines)  Macro structure planning
+│   ├── candidates.py        (~290 lines)  Pitch generation & constraint scoring
+│   ├── counterpoint.py      (~330 lines)  Free CP & countersubject placement
+│   ├── placement.py         (~180 lines)  Subject/answer placement
+│   ├── episodes.py          (~190 lines)  Episode generation
+│   ├── exposition.py        (~115 lines)  Exposition with CS capture
+│   ├── coda.py              (~165 lines)  Cadential coda
+│   ├── postprocess.py       (~350 lines)  Post-processing passes
+│   ├── voice_utils.py       (~120 lines)  Key helpers, range adaptation
+│   ├── generator.py         (~230 lines)  Orchestrator + re-exports
+│   ├── search.py            (~310 lines)  MCTS beam search
+│   └── judge.py             (~400 lines)  4-axis scorer
+├── corpus/
+│   ├── __init__.py
+│   ├── gold.py              13 BWV subjects
+│   ├── loader.py            MIDI/MusicXML loader
+│   └── pipeline.py          Evaluation pipeline
+├── scripts/
+│   └── generate_midi.py     Phase 1 MIDI generation + baselines
 ├── tests/
-│   ├── __init__.py
-│   ├── test_core.py        ← 27 tests
-│   └── test_corpus.py      ← 9 tests
-└── output/                  ← generated MIDI files (gitignored)
+│   ├── test_core.py         27 tests
+│   └── test_corpus.py       9 tests
+└── output/midi/             Generated MIDI files (gitignored)
 ```
