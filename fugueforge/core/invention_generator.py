@@ -170,6 +170,35 @@ def _extract_rhythm(subject: Subject) -> list[float]:
     return [n.duration for n in subject.notes if not n.is_rest]
 
 
+def _cp_rhythm(subject: Subject) -> list[float]:
+    """
+    Build a *slower* rhythm pattern for the counterpoint voice.
+
+    While the subject/running voice uses fast figuration (8th/16th notes),
+    the accompanying voice provides contrast with longer values.
+    Strategy: group subject notes in pairs/triples → merge into one longer note.
+    Ensures each CP note is at least 0.5 beats (8th note).
+    """
+    src = _extract_rhythm(subject)
+    if not src:
+        return [1.0]
+    # Merge consecutive short notes into longer ones
+    # Target: roughly half the number of notes
+    result: list[float] = []
+    acc = 0.0
+    for i, d in enumerate(src):
+        acc += d
+        # Merge until we reach at least 0.5, or at phrase boundary (every 4th)
+        if acc >= 0.5 or i == len(src) - 1:
+            result.append(round(acc, 4))
+            acc = 0.0
+    # If everything ended up as one giant note, split
+    if len(result) == 1 and result[0] > 2.0:
+        half = round(result[0] / 2, 4)
+        result = [half, result[0] - half]
+    return result
+
+
 def _get_sounding_pitch(
     voices: dict[int, list[FugueNote]],
     exclude_voice: int,
@@ -299,19 +328,21 @@ def _diatonic_step(
         # Register gravity: pull toward center (avoid extremes)
         dist = abs(p - center) / max(1, (hi - lo) / 2)
         sc -= dist * 3.0
-        # Consonance: prefer consonance, penalise all dissonance on weak beat
+        # Consonance: STRONG avoidance of dissonance (must outweigh scale bonus)
         if other_pitch is not None:
             iv = interval_class(p - other_pitch)
             if iv in (3, 4, 8, 9):
-                sc += 2.0       # imperfect consonance
+                sc += 4.0       # imperfect consonance — BEST
             elif iv in (0, 7):
-                sc += 1.0       # perfect consonance
+                sc += 2.0       # perfect consonance
             elif iv in (1, 11):
-                sc -= 5.0       # m2/M7 — harshest
+                sc -= 12.0      # m2/M7 — harshest, must always lose
             elif iv == 6:
-                sc -= 4.0       # tritone
-            elif iv in (2, 5, 10):
-                sc -= 3.0       # M2/P4/m7 — mild avoidance
+                sc -= 10.0      # tritone
+            elif iv in (2, 10):
+                sc -= 8.0       # M2/m7
+            elif iv == 5:
+                sc -= 6.0       # P4 (mild dissonance in 2-voice)
 
         if sc > best_sc:
             best_sc = sc
@@ -341,12 +372,13 @@ def _generate_harmonic_melody(
     harmonic_skeleton: list[ChordLabel] | None = None,
     start_pitch: int | None = None,
     role: EntryRole = EntryRole.FREE_COUNTERPOINT,
+    rhythm_override: list[float] | None = None,
 ) -> list[FugueNote]:
     """
     Generate counterpoint whose pitches are BORN from the harmonic skeleton.
 
     Algorithm:
-      1. Build a time grid from the subject's rhythm (duration pattern).
+      1. Build a time grid from rhythm_override (or subject rhythm).
       2. Extract contour (up/down) from the subject's interval sequence.
       3. At each time slot:
          a) Follow contour with a diatonic step  →  *ideal pitch*
@@ -354,8 +386,8 @@ def _generate_harmonic_melody(
          c) If weak beat: keep ideal (passing / neighbor tone OK)
       4. Check consonance with other voice at every step.
 
-    Subject provides:  RHYTHM  +  CONTOUR DIRECTION
-    Harmony provides:  CHORD TONES  (the actual pitch vocabulary)
+    rhythm_override: if given, uses this rhythm instead of the subject's.
+                     Use _cp_rhythm(subject) for slower accompaniment.
     """
     if duration <= 0:
         return []
@@ -363,8 +395,8 @@ def _generate_harmonic_melody(
     lo, hi = config.voice_ranges.get(voice, (36, 84))
     scale_pcs = config.scale_pcs
 
-    # ── Build time grid from subject rhythm ──
-    rhythm = _extract_rhythm(subject)
+    # ── Build time grid ──
+    rhythm = rhythm_override if rhythm_override else _extract_rhythm(subject)
     if not rhythm:
         return []
 
@@ -462,7 +494,9 @@ def _invention_exposition(
     voices[1].extend(ans_notes)
 
     # 3. Harmonic-melody CP for Voice 0 while Voice 1 plays
+    #    Use slower rhythm for accompaniment → rhythmic contrast
     last_subj_p = subj_notes[-1].pitch if subj_notes else 72
+    slow_rhythm = _cp_rhythm(subject)
     cp_notes = _generate_harmonic_melody(
         subject=subject, voice=0,
         start_offset=subject.duration,
@@ -471,6 +505,7 @@ def _invention_exposition(
         config=config,
         harmonic_skeleton=harmonic_skeleton,
         start_pitch=last_subj_p,
+        rhythm_override=slow_rhythm,
     )
     voices[0].extend(cp_notes)
 
@@ -507,8 +542,9 @@ def _generate_invention_entry(
         subj_notes = _adjust_to_voice_range(subj_notes, entry.voice, config)
         voices.setdefault(entry.voice, []).extend(subj_notes)
 
-    # Other voice gets harmonic CP
+    # Other voice gets harmonic CP with slower rhythm for contrast
     entry_voices = {e.voice for e in section.entries}
+    slow_rhythm = _cp_rhythm(plan.subject)
     for v in range(2):
         if v in entry_voices:
             continue
@@ -521,6 +557,7 @@ def _generate_invention_entry(
             existing_voices=voices, config=config,
             harmonic_skeleton=harmonic_skeleton,
             start_pitch=start_p,
+            rhythm_override=slow_rhythm,
         )
         voices.setdefault(v, []).extend(cp)
 
@@ -535,35 +572,54 @@ def _generate_invention_episode(
     harmonic_skeleton: list[ChordLabel] | None,
 ) -> None:
     """
-    Both voices get harmonic-melody material with a half-motif stagger
-    to create an imitative texture.  The harmonic skeleton guides the
-    sequential modulation.
+    Episode with rhythmic alternation (Bach-style):
+      First half:  V0 runs (subject rhythm), V1 sustains (slow rhythm)
+      Second half: V1 runs, V0 sustains — swap roles
+
+    This creates the characteristic complementary-rhythm texture
+    instead of both voices playing dense figuration simultaneously.
     """
-    rhythm = _extract_rhythm(plan.subject)
-    head_dur = sum(rhythm[:min(4, len(rhythm))]) if rhythm else 1.0
-    # Quantise stagger to nearest 0.25 so the time grid stays beat-aligned
-    stagger = round(head_dur * 0.5 / 0.25) * 0.25
-    if stagger < 0.25:
-        stagger = 0.25
+    ep_start = section.start_offset
+    ep_dur = section.estimated_duration
+    half = round(ep_dur / 2.0 / 0.25) * 0.25  # quantise split point
+    if half < 0.5:
+        half = ep_dur  # too short to split
 
-    for v in range(2):
-        ep_start = section.start_offset + v * stagger
-        ep_dur = section.estimated_duration - v * stagger
-        if ep_dur <= 0:
-            continue
+    fast_rhythm = _extract_rhythm(plan.subject)
+    slow_rhythm = _cp_rhythm(plan.subject)
 
+    # --- First half: V0 runs, V1 sustains ---
+    for v, rhythm in [(0, fast_rhythm), (1, slow_rhythm)]:
+        dur = half
         prev_notes = sorted(voices.get(v, []), key=lambda n: n.offset)
         start_p = prev_notes[-1].pitch if prev_notes else None
-
         cp = _generate_harmonic_melody(
             subject=plan.subject, voice=v,
-            start_offset=ep_start, duration=ep_dur,
+            start_offset=ep_start, duration=dur,
             existing_voices=voices, config=config,
             harmonic_skeleton=harmonic_skeleton,
             start_pitch=start_p,
             role=EntryRole.EPISODE_MATERIAL,
+            rhythm_override=rhythm,
         )
         voices.setdefault(v, []).extend(cp)
+
+    # --- Second half: swap — V1 runs, V0 sustains ---
+    if half < ep_dur:
+        remaining = ep_dur - half
+        for v, rhythm in [(1, fast_rhythm), (0, slow_rhythm)]:
+            prev_notes = sorted(voices.get(v, []), key=lambda n: n.offset)
+            start_p = prev_notes[-1].pitch if prev_notes else None
+            cp = _generate_harmonic_melody(
+                subject=plan.subject, voice=v,
+                start_offset=ep_start + half, duration=remaining,
+                existing_voices=voices, config=config,
+                harmonic_skeleton=harmonic_skeleton,
+                start_pitch=start_p,
+                role=EntryRole.EPISODE_MATERIAL,
+                rhythm_override=rhythm,
+            )
+            voices.setdefault(v, []).extend(cp)
 
 
 # -------- Coda --------
@@ -586,7 +642,8 @@ def _generate_invention_coda(
     cadence_beats = min(2.0, duration)
     free_dur = max(0, duration - cadence_beats)
 
-    # Lead-in
+    # Lead-in — use slower rhythm (winding down toward cadence)
+    slow_rhythm = _cp_rhythm(subject)
     if free_dur > 0.5:
         for v in range(2):
             prev = sorted(voices.get(v, []), key=lambda n: n.offset)
@@ -597,6 +654,7 @@ def _generate_invention_coda(
                 existing_voices=voices, config=config,
                 harmonic_skeleton=harmonic_skeleton,
                 start_pitch=sp,
+                rhythm_override=slow_rhythm,
             )
             voices.setdefault(v, []).extend(cp)
 
@@ -725,9 +783,10 @@ def generate_invention(
                                      section.estimated_duration,
                                      config, full_skeleton)
 
-    # Post-process
+    # Post-process (run dissonance fix twice for iterative convergence)
     voices = _postprocess_leap_resolution(voices)
     voices = _postprocess_fix_parallels(voices)
+    voices = _postprocess_fix_dissonances(voices, scale_pcs=config.scale_pcs)
     voices = _postprocess_fix_dissonances(voices, scale_pcs=config.scale_pcs)
 
     return voices

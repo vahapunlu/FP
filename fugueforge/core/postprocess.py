@@ -147,7 +147,17 @@ def _postprocess_fix_dissonances(
     Scan for dissonances in modifiable notes and fix them
     by shifting 1-2 semitones to the nearest consonance, if possible
     without creating voice crossing. Prefers in-scale adjustments.
+
+    Checks EVERY vertical sounding moment: both note-onset and sustained
+    overlap (a long note sounding while the other voice moves).
     """
+    # Build a quick lookup: for each voice, list of (offset, end, pitch, index)
+    def _sounding_at(v_notes: list[FugueNote], t: float) -> int | None:
+        for i, n in enumerate(v_notes):
+            if not n.is_rest and n.offset <= t < n.offset + n.duration:
+                return i
+        return None
+
     for v, v_notes in voices.items():
         for j, n in enumerate(v_notes):
             if n.is_rest:
@@ -155,24 +165,32 @@ def _postprocess_fix_dissonances(
             if n.role not in (EntryRole.FREE_COUNTERPOINT, EntryRole.EPISODE_MATERIAL):
                 continue
 
-            other_pitches: dict[int, int] = {}
+            # Collect ALL other-voice pitches that sound during this note's lifespan
+            other_pitches_at_onset: dict[int, int] = {}
+            other_during: list[tuple[int, int]] = []  # (other_voice, other_pitch)
             for ov, ov_notes in voices.items():
                 if ov == v:
                     continue
                 for on in ov_notes:
                     if on.is_rest:
                         continue
-                    if on.offset <= n.offset < on.offset + on.duration:
-                        other_pitches[ov] = on.pitch
-                        break
+                    # Does this other note overlap with n at all?
+                    if on.offset < n.offset + n.duration and on.offset + on.duration > n.offset:
+                        other_during.append((ov, on.pitch))
+                        # Also check onset specifically
+                        if on.offset <= n.offset < on.offset + on.duration:
+                            other_pitches_at_onset[ov] = on.pitch
 
-            if not other_pitches:
+            if not other_during:
                 continue
 
-            # Check for dissonance OR out-of-scale on strong beat
-            has_dissonance = any(
-                is_dissonance(n.pitch - op) for op in other_pitches.values()
-            )
+            # Check for dissonance at onset OR during sustain
+            has_dissonance = False
+            for _, op in other_during:
+                if is_dissonance(n.pitch - op):
+                    has_dissonance = True
+                    break
+
             is_strong = abs(n.offset - round(n.offset)) < 0.01
             is_chromatic = scale_pcs and (n.pitch % 12 not in scale_pcs)
             if not has_dissonance and not (is_chromatic and is_strong):
@@ -180,17 +198,18 @@ def _postprocess_fix_dissonances(
 
             best_adj = None
             best_score = -999
-            for adj in [0, 1, -1, 2, -2, 3, -3]:
+            for adj in [0, 1, -1, 2, -2, 3, -3, 4, -4]:
                 if adj == 0 and has_dissonance:
                     continue
                 new_p = n.pitch + adj
+                # Must be consonant with ALL notes that overlap during lifespan
                 all_cons = all(
-                    is_consonance(new_p - op) for op in other_pitches.values()
+                    is_consonance(new_p - op) for _, op in other_during
                 )
                 if not all_cons:
                     continue
                 crossing = False
-                for ov, op in other_pitches.items():
+                for ov, op in other_during:
                     if v < ov and new_p < op:
                         crossing = True
                     elif v > ov and new_p > op:
