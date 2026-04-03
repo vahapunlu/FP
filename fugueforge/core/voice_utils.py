@@ -34,24 +34,39 @@ def _adapt_voice_ranges(
 
     new_ranges = dict(config.voice_ranges)
 
+    # Minimum span guarantee for melodic quality
+    min_span = 20
+
     if num_voices == 3:
         new_ranges[0] = (subj_lo, max(answer_hi + padding, subj_hi + 12))
         new_ranges[1] = (max(36, subj_lo - 7), subj_hi + padding)
-        new_ranges[2] = (max(36, subj_lo - 19), subj_hi - 2)
+        r2_lo = max(36, subj_lo - 19)
+        r2_hi = max(subj_hi - 2, r2_lo + min_span)
+        new_ranges[2] = (r2_lo, r2_hi)
     elif num_voices == 4:
         new_ranges[0] = (answer_lo - padding, answer_hi + padding)
         new_ranges[1] = (subj_lo, subj_hi + padding + 5)
-        new_ranges[2] = (max(36, subj_lo - 12), subj_hi)
-        new_ranges[3] = (max(36, subj_lo - 24), subj_lo + 5)
+        r2_lo = max(36, subj_lo - 12)
+        r2_hi = max(subj_hi, r2_lo + min_span)
+        new_ranges[2] = (r2_lo, r2_hi)
+        r3_lo = max(36, subj_lo - 24)
+        r3_hi = max(subj_lo + 7, r3_lo + min_span)
+        new_ranges[3] = (r3_lo, r3_hi)
     elif num_voices == 2:
         new_ranges[0] = (subj_lo, answer_hi + padding)
         new_ranges[1] = (max(36, subj_lo - 12), subj_hi)
     elif num_voices == 5:
         new_ranges[0] = (answer_lo - padding, answer_hi + padding + 5)
         new_ranges[1] = (subj_lo, subj_hi + padding + 5)
-        new_ranges[2] = (max(36, subj_lo - 7), subj_hi + 2)
-        new_ranges[3] = (max(36, subj_lo - 19), subj_lo + 5)
-        new_ranges[4] = (max(36, subj_lo - 31), max(36, subj_lo - 7))
+        r2_lo = max(36, subj_lo - 7)
+        r2_hi = max(subj_hi + 2, r2_lo + min_span)
+        new_ranges[2] = (r2_lo, r2_hi)
+        r3_lo = max(36, subj_lo - 19)
+        r3_hi = max(subj_lo + 7, r3_lo + min_span)
+        new_ranges[3] = (r3_lo, r3_hi)
+        r4_lo = max(36, subj_lo - 31)
+        r4_hi = max(36, subj_lo - 5, r4_lo + min_span)
+        new_ranges[4] = (r4_lo, r4_hi)
 
     new_config = GenerationConfig(
         beam_width=config.beam_width,
@@ -140,7 +155,7 @@ def voices_to_score(
     title: str = "FugueForge Output",
 ) -> "stream.Score":
     """Convert generated voices to a music21 Score."""
-    from music21 import metadata, stream
+    from music21 import metadata, note as m21note, stream
 
     score = stream.Score()
     md = metadata.Metadata()
@@ -151,9 +166,20 @@ def voices_to_score(
     for v in sorted(voices.keys()):
         part = stream.Part()
         part.id = f"Voice {v}"
-        for fn in sorted(voices[v], key=lambda n: n.offset):
+        sorted_notes = sorted(voices[v], key=lambda n: n.offset)
+
+        # Insert notes and fill gaps with rests for clean MIDI output
+        prev_end = 0.0
+        for fn in sorted_notes:
+            # Fill gap with rest if needed
+            gap = fn.offset - prev_end
+            if gap > 0.05:
+                rest = m21note.Rest(quarterLength=round(gap * 4) / 4)  # quantize
+                part.insert(prev_end, rest)
             el = fn.to_music21()
             part.insert(fn.offset, el)
+            prev_end = max(prev_end, fn.offset + fn.duration)
+
         score.append(part)
 
     return score

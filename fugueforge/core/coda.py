@@ -46,7 +46,9 @@ def generate_coda(
     third_pc = (tonic_pc + 3) % 12 if is_minor else (tonic_pc + 4) % 12
 
     # --- Thematic coda: place subject in bass, counterpoint above, then cadence ---
-    free_dur = max(0, duration - 4.0)  # save last 4 beats for cadence
+    cadence_beats = min(4.0, duration)
+    cad_half = cadence_beats / 2.0
+    free_dur = max(0, duration - cadence_beats)  # save cadence time
     subj_dur = subject.duration
     bass_voice = num_voices - 1
 
@@ -87,47 +89,53 @@ def generate_coda(
                 result.setdefault(v, []).extend(cp)
                 working_voices.setdefault(v, []).extend(cp)
 
-    # Final cadence: V chord (2 beats) → I chord (2 beats)
-    cadence_offset = start_offset + free_dur
+    # Final cadence: V chord → I chord
+    cadence_offset = start_offset + max(0, duration - cadence_beats)
 
     for v in range(num_voices):
         lo, hi = config.voice_ranges.get(v, (48, 72))
         mid = (lo + hi) // 2
 
-        # V chord pitch for this voice — bass MUST have the dominant root
+        # V chord pitch for this voice
+        #   bass: dominant root, soprano: dominant root or 3rd,
+        #   inner voices: alternate leading tone / 5th of V
+        leading_tone_pc = (tonic_pc - 1) % 12
+        v_fifth_pc = (dominant_pc + 7) % 12
         if v == num_voices - 1:
             v_pitch = _nearest_pitch_class(mid, dominant_pc, lo, hi)
-        elif v == 1:
-            leading_tone_pc = (tonic_pc - 1) % 12
-            v_pitch = _nearest_pitch_class(mid, leading_tone_pc, lo, hi)
-        elif v >= 2:
-            v_fifth_pc = (dominant_pc + 7) % 12
-            v_pitch = _nearest_pitch_class(mid, v_fifth_pc, lo, hi)
-        else:
+        elif v == 0:
             v_pitch = _nearest_pitch_class(mid, dominant_pc, lo, hi)
+        elif v % 2 == 1:
+            v_pitch = _nearest_pitch_class(mid, leading_tone_pc, lo, hi)
+        else:
+            v_pitch = _nearest_pitch_class(mid, v_fifth_pc, lo, hi)
 
         result.setdefault(v, []).append(FugueNote(
             pitch=v_pitch,
-            duration=2.0,
+            duration=cad_half,
             voice=v,
             offset=cadence_offset,
             role=EntryRole.CODETTA,
         ))
 
         # I chord pitch for this voice
-        if v == 0:
-            i_pitch = _nearest_pitch_class(mid, third_pc, lo, hi)
-        elif v == num_voices - 1:
+        #   bass: tonic root, soprano: 3rd or root,
+        #   inner voices: alternate root / 5th (double root for fullness)
+        fifth_pc = (tonic_pc + 7) % 12
+        if v == num_voices - 1:
             i_pitch = _nearest_pitch_class(mid, tonic_pc, lo, hi)
+        elif v == 0:
+            i_pitch = _nearest_pitch_class(mid, third_pc, lo, hi)
+        elif v % 2 == 1:
+            i_pitch = _nearest_pitch_class(mid, tonic_pc, lo, hi)  # double root
         else:
-            fifth_pc = (tonic_pc + 7) % 12
             i_pitch = _nearest_pitch_class(mid, fifth_pc, lo, hi)
 
         result.setdefault(v, []).append(FugueNote(
             pitch=i_pitch,
-            duration=2.0,
+            duration=cad_half,
             voice=v,
-            offset=cadence_offset + 2.0,
+            offset=cadence_offset + cad_half,
             role=EntryRole.CODETTA,
         ))
 

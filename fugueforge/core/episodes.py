@@ -75,7 +75,9 @@ def generate_episode(
     if not motif_notes:
         return []
 
-    motif_dur = sum(n.duration for n in motif_notes)
+    motif_dur = motif_notes[-1].offset + motif_notes[-1].duration - motif_notes[0].offset
+    if motif_dur <= 0:
+        motif_dur = sum(n.duration for n in motif_notes)
     if motif_dur == 0:
         return []
 
@@ -123,7 +125,7 @@ def generate_episode(
                         1 for op in other_current.values()
                         if op != -1 and is_consonance(p - op)
                     )
-                    is_strong = (note_offset % 1.0) < 0.01
+                    is_strong = abs(note_offset - round(note_offset)) < 0.01
                     sc = cons * 3
                     if is_strong:
                         sc += cons * 3

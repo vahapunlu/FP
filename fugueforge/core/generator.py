@@ -189,15 +189,19 @@ def _generate_episode_section(
     harmonic_skeleton: list[ChordLabel] | None = None,
 ) -> None:
     """Generate episodes voice by voice, staggered for imitative texture."""
-    motif_dur = sum(
-        n.duration for n in plan.subject.notes if not n.is_rest
-    ) / max(1, len([n for n in plan.subject.notes if not n.is_rest][:4]))
+    # Use actual time span of motif (not sum of durations) to avoid starving lower voices
+    head_notes = [n for n in plan.subject.notes if not n.is_rest][:4]
+    if head_notes:
+        motif_dur = head_notes[-1].offset + head_notes[-1].duration - head_notes[0].offset
+    else:
+        motif_dur = 2.0
+    motif_dur = max(1.0, motif_dur)  # safety floor
 
     episode_sources = [
         "subject_head", "subject_head_inverted",
         "countersubject", "subject_tail",
     ]
-    seq_intervals = [-2, 2, -3]
+    seq_intervals = [-2, 2, -2, 2]  # smoother intervals for all voices
 
     for v in range(plan.num_voices):
         stagger = v * motif_dur * min(

@@ -73,7 +73,9 @@ def generate_exposition(
 
             # Generate counterpoint from prev_end to current entry end
             entry_end = entry.start_offset + subject.duration
-            gap = entry_end - prev_end
+            # Don't overlap: start from whichever is later
+            cp_start = max(prev_end, entry.start_offset)
+            gap = entry_end - cp_start
 
             if gap > 0:
                 last_pitch = None
@@ -94,7 +96,7 @@ def generate_exposition(
                 else:
                     cp = generate_free_counterpoint(
                         voice=prev_voice,
-                        start_offset=prev_end,
+                        start_offset=cp_start,
                         duration=gap,
                         existing_voices=voices,
                         start_pitch=last_pitch,
@@ -105,12 +107,14 @@ def generate_exposition(
                 # Capture countersubject from the 1st voice's counterpoint
                 # against the 2nd entry (this IS the countersubject)
                 if entry_idx == 1 and prev_idx == 0 and not countersubject:
+                    # Normalize offsets so CS starts at t=0
+                    cs_base = cp[0].offset if cp else entry.start_offset
                     countersubject = [
                         FugueNote(
                             pitch=n.pitch,
                             duration=n.duration,
                             voice=0,  # normalize to voice 0
-                            offset=n.offset - entry.start_offset,  # relative offset
+                            offset=n.offset - cs_base,  # relative offset from 0
                             role=EntryRole.COUNTERSUBJECT,
                         )
                         for n in cp

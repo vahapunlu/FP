@@ -89,7 +89,7 @@ def generate_free_counterpoint(
             if v not in other_prev:
                 other_prev[v] = other_current.get(v, -1)
 
-        is_strong = (current_offset % 1.0) < 0.01
+        is_strong = abs(current_offset - round(current_offset)) < 0.01
 
         # Look up current chord from harmonic skeleton
         current_chord_pcs: frozenset[int] = frozenset()
