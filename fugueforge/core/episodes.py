@@ -126,6 +126,13 @@ def generate_episode(
                     if is_strong:
                         sc += cons * 3
 
+                    # Scale/tonality: strongly prefer in-key pitches
+                    if config.scale_pcs:
+                        if p % 12 in config.scale_pcs:
+                            sc += 8
+                        else:
+                            sc -= 10 if is_strong else 5
+
                     # Leap resolution
                     if result and abs(prev_interval) >= 5:
                         mel = p - prev_p

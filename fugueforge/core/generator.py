@@ -43,6 +43,7 @@ from .candidates import (  # noqa: F401
 from .voice_utils import (  # noqa: F401
     _adapt_voice_ranges,
     _key_to_transposition,
+    key_to_scale_pcs,
     voices_to_score,
 )
 from .placement import (  # noqa: F401
@@ -129,7 +130,7 @@ def generate_fugue(
     # Post-process: fix common counterpoint issues
     voices = _postprocess_leap_resolution(voices)
     voices = _postprocess_fix_parallels(voices)
-    voices = _postprocess_fix_dissonances(voices)
+    voices = _postprocess_fix_dissonances(voices, scale_pcs=config.scale_pcs)
     voices = _postprocess_climax_placement(voices)
 
     return voices

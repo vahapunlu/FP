@@ -112,16 +112,25 @@ def generate_free_counterpoint(
                     if op != -1
                 )
                 if is_now_consonant and abs(cp - current_pitch) <= 2:
-                    s += 12.0
+                    s += 15.0   # Strong reward for stepwise resolution
                 elif is_now_consonant:
-                    s += 4.0
+                    s += 6.0    # Reward for any resolution
                 elif not is_now_consonant:
-                    s -= 8.0
+                    s -= 15.0   # Heavy penalty for consecutive dissonance
             if not vetoed:
                 scored.append((s, cp))
 
-        # If all candidates vetoed, relax constraints
+        # If all candidates vetoed, relax hard vetoes but keep dissonance penalty
         if not scored:
+            relaxed_config = GenerationConfig(
+                **{**config.__dict__,
+                   'parallel_veto': False,
+                   'crossing_veto': False,
+                   'dissonance_penalty': config.dissonance_penalty * 1.5,
+                   'scale_pcs': config.scale_pcs,
+                   'scale_bonus': config.scale_bonus,
+                   'chromatic_penalty': config.chromatic_penalty}
+            )
             for cp in candidates:
                 s, _ = _score_candidate(
                     candidate=cp,
@@ -131,11 +140,7 @@ def generate_free_counterpoint(
                     other_voices_prev=other_prev,
                     is_strong_beat=is_strong,
                     prev_interval=prev_melodic_interval,
-                    config=GenerationConfig(
-                        **{**config.__dict__,
-                           'parallel_veto': False,
-                           'crossing_veto': False}
-                    ),
+                    config=relaxed_config,
                 )
                 scored.append((s, cp))
 

@@ -141,19 +141,18 @@ def _postprocess_leap_resolution(
 
 def _postprocess_fix_dissonances(
     voices: dict[int, list[FugueNote]],
+    scale_pcs: frozenset[int] = frozenset(),
 ) -> dict[int, list[FugueNote]]:
     """
-    Scan for strong-beat dissonances in modifiable notes and fix them
+    Scan for dissonances in modifiable notes and fix them
     by shifting 1-2 semitones to the nearest consonance, if possible
-    without creating voice crossing.
+    without creating voice crossing. Prefers in-scale adjustments.
     """
     for v, v_notes in voices.items():
         for j, n in enumerate(v_notes):
             if n.is_rest:
                 continue
             if n.role not in (EntryRole.FREE_COUNTERPOINT, EntryRole.EPISODE_MATERIAL):
-                continue
-            if (n.offset % 1.0) > 0.01:
                 continue
 
             other_pitches: dict[int, int] = {}
@@ -170,14 +169,20 @@ def _postprocess_fix_dissonances(
             if not other_pitches:
                 continue
 
+            # Check for dissonance OR out-of-scale on strong beat
             has_dissonance = any(
                 is_dissonance(n.pitch - op) for op in other_pitches.values()
             )
-            if not has_dissonance:
+            is_strong = abs(n.offset - round(n.offset)) < 0.01
+            is_chromatic = scale_pcs and (n.pitch % 12 not in scale_pcs)
+            if not has_dissonance and not (is_chromatic and is_strong):
                 continue
 
             best_adj = None
-            for adj in [1, -1, 2, -2]:
+            best_score = -999
+            for adj in [0, 1, -1, 2, -2, 3, -3]:
+                if adj == 0 and has_dissonance:
+                    continue
                 new_p = n.pitch + adj
                 all_cons = all(
                     is_consonance(new_p - op) for op in other_pitches.values()
@@ -192,10 +197,15 @@ def _postprocess_fix_dissonances(
                         crossing = True
                 if crossing:
                     continue
-                best_adj = adj
-                break
+                # Score: prefer in-scale, minimal movement
+                sc = -abs(adj) * 2
+                if scale_pcs and (new_p % 12 in scale_pcs):
+                    sc += 10
+                if best_adj is None or sc > best_score:
+                    best_adj = adj
+                    best_score = sc
 
-            if best_adj is not None:
+            if best_adj is not None and best_adj != 0:
                 v_notes[j] = FugueNote(
                     pitch=n.pitch + best_adj,
                     duration=n.duration,

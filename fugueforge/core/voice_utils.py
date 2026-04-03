@@ -66,9 +66,46 @@ def _adapt_voice_ranges(
         crossing_veto=config.crossing_veto,
         leap_resolution_bonus=config.leap_resolution_bonus,
         contrary_motion_bonus=config.contrary_motion_bonus,
+        scale_bonus=config.scale_bonus,
+        chromatic_penalty=config.chromatic_penalty,
+        scale_pcs=config.scale_pcs if config.scale_pcs else key_to_scale_pcs(subject.key_signature),
         voice_ranges=new_ranges,
     )
     return new_config
+
+
+# ---------------------------------------------------------------------------
+# Scale / key helpers
+# ---------------------------------------------------------------------------
+
+def key_to_scale_pcs(key_sig: str) -> frozenset[int]:
+    """
+    Convert a key signature string to a frozenset of diatonic pitch classes.
+    For minor keys, includes both natural-minor and harmonic-minor
+    (raised 7th / leading tone) so that V→I cadences work naturally.
+    """
+    key_semitones = {
+        "C": 0, "c": 0, "D": 2, "d": 2, "E": 4, "e": 4,
+        "F": 5, "f": 5, "G": 7, "g": 7, "A": 9, "a": 9,
+        "B": 11, "b": 11,
+        "Bb": 10, "bb": 10, "Eb": 3, "eb": 3, "Ab": 8, "ab": 8,
+        "Db": 1, "db": 1, "Gb": 6, "gb": 6,
+        "F#": 6, "f#": 6, "C#": 1, "c#": 1,
+        "G#": 8, "g#": 8, "D#": 3, "d#": 3,
+    }
+    root = key_semitones.get(key_sig, 0)
+    is_minor = key_sig[0].islower() if key_sig else False
+
+    if is_minor:
+        # Natural minor + raised 7th (harmonic minor leading tone)
+        #   T S T T S T T  →  0 2 3 5 7 8 10
+        # + raised 7th        0 2 3 5 7 8 10 11
+        intervals = {0, 2, 3, 5, 7, 8, 10, 11}
+    else:
+        # Major:  T T S T T T S  →  0 2 4 5 7 9 11
+        intervals = {0, 2, 4, 5, 7, 9, 11}
+
+    return frozenset((root + i) % 12 for i in intervals)
 
 
 # ---------------------------------------------------------------------------

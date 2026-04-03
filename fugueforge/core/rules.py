@@ -435,26 +435,28 @@ class CounterpointRuleChecker:
                         continue
                     semitones = abs(pi - pj)
                     if is_dissonance(semitones):
-                        # Check if on a strong beat (offset is integer)
-                        if snap.offset == int(snap.offset):
-                            # Check if next beat resolves
-                            resolved = False
-                            if idx + 1 < len(snapshots):
-                                ns = snapshots[idx + 1]
-                                npi = ns.pitches.get(vi, -1)
-                                npj = ns.pitches.get(vj, -1)
-                                if npi != -1 and npj != -1:
-                                    if is_consonance(abs(npi - npj)):
-                                        resolved = True
-                            if not resolved:
-                                violations.append(Violation(
-                                    type=ViolationType.DISSONANCE_UNRESOLVED,
-                                    severity=Severity.ERROR if self.strict else Severity.WARNING,
-                                    offset=snap.offset,
-                                    voices=(vi, vj),
-                                    message=f"Unresolved dissonance ({semitones}st) at beat {snap.offset}",
-                                    penalty=5.0,
-                                ))
+                        is_strong_beat = abs(snap.offset - round(snap.offset)) < 0.01
+                        # Check if next beat resolves
+                        resolved = False
+                        if idx + 1 < len(snapshots):
+                            ns = snapshots[idx + 1]
+                            npi = ns.pitches.get(vi, -1)
+                            npj = ns.pitches.get(vj, -1)
+                            if npi != -1 and npj != -1:
+                                if is_consonance(abs(npi - npj)):
+                                    resolved = True
+                        if not resolved:
+                            # Strong-beat unresolved dissonance is ERROR, weak-beat is WARNING
+                            sev = Severity.ERROR if (is_strong_beat and self.strict) else Severity.WARNING
+                            pen = 5.0 if is_strong_beat else 3.0
+                            violations.append(Violation(
+                                type=ViolationType.DISSONANCE_UNRESOLVED,
+                                severity=sev,
+                                offset=snap.offset,
+                                voices=(vi, vj),
+                                message=f"Unresolved dissonance ({semitones}st) at beat {snap.offset}",
+                                penalty=pen,
+                            ))
         return violations
 
 

@@ -41,6 +41,9 @@ class GenerationConfig:
     crossing_veto: bool = True       # hard-reject voice crossing
     leap_resolution_bonus: float = 12.0
     contrary_motion_bonus: float = 1.5
+    scale_bonus: float = 10.0        # bonus for in-scale pitches
+    chromatic_penalty: float = 8.0   # penalty for out-of-scale pitches
+    scale_pcs: frozenset[int] = frozenset()  # pitch classes in the current key
     voice_ranges: dict[int, tuple[int, int]] = field(
         default_factory=lambda: dict(VOICE_RANGES),
     )
@@ -261,7 +264,7 @@ def _score_candidate(
             if is_strong_beat:
                 score -= config.dissonance_penalty * diss_mult
             else:
-                score -= config.dissonance_penalty * 0.4
+                score -= config.dissonance_penalty * 0.75
 
     # 7. Contrary motion bonus
     for ov, oc in other_voices_current.items():
@@ -273,7 +276,23 @@ def _score_candidate(
             if (mel_interval > 0) != (other_motion > 0):
                 score += config.contrary_motion_bonus
 
-    # 8. Hidden 5ths/8ves (soft penalty)
+    # 8. Scale/tonality: strong bonus for in-key pitches, penalty for chromatic
+    if config.scale_pcs:
+        candidate_pc = candidate % 12
+        if candidate_pc in config.scale_pcs:
+            score += config.scale_bonus
+        else:
+            # Allow chromatic passing tones on weak beats only
+            if is_strong_beat:
+                score -= config.chromatic_penalty * 1.5
+            else:
+                # Weak-beat chromatic is tolerable only if stepwise
+                if abs_interval <= 2:
+                    score -= config.chromatic_penalty * 0.3
+                else:
+                    score -= config.chromatic_penalty
+
+    # 9. Hidden 5ths/8ves (soft penalty)
     for ov, oc in other_voices_current.items():
         if oc == -1:
             continue
