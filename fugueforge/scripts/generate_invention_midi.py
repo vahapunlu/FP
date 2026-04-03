@@ -104,7 +104,7 @@ def generate_all_invention_midi(
         # Generate invention
         t0 = time.time()
         config = _invention_config()
-        voices = generate_invention(plan, config)
+        voices = generate_invention(plan, config, answer_at_fifth=inv.answer_at_fifth)
         elapsed = time.time() - t0
 
         # Judge score (reuse fugue judge — structure axis less relevant)
